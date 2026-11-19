@@ -40,6 +40,12 @@ MAX_UTTERANCE = 15.0     # s hard cap
 _oww = _vad = _mic = _tiny = None
 ROOT = os.environ.get("FRIDAY_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TINY_DIR = os.path.join(ROOT, "models", "tiny.en")  # shipped by the installer (~75 MB) so the wake word works at once
+# Silero VAD: openWakeWord >= 0.6 no longer ships its models in the wheel, so the installer carries this one (1.8 MB)
+SILERO = os.path.join(ROOT, "models", "wake", "silero_vad.onnx")
+
+
+def _vad_model():
+    return VAD(model_path=SILERO) if os.path.isfile(SILERO) else VAD()  # dev venv with an older wheel: its own copy
 DEAD_MIC_S = 3.0  # this long of exact zeros = the mic is blocked (Windows privacy setting) or muted at the driver
 ON_DEAD_MIC = None  # friday.py sets it: called once per stream when DeadMicWatch fires
 
@@ -81,14 +87,14 @@ def _load():
             from faster_whisper import WhisperModel
             src = TINY_DIR if os.path.isfile(os.path.join(TINY_DIR, "model.bin")) else "tiny.en"  # else HF, ~75 MB
             _tiny = WhisperModel(src, device="cpu", compute_type="int8", cpu_threads=2)  # no VRAM
-        _vad = _vad or VAD()
+        _vad = _vad or _vad_model()
         return
     if _oww is None:
         models = os.path.join(os.path.dirname(openwakeword.__file__), "resources", "models")
         if not os.path.exists(os.path.join(models, "embedding_model.onnx")):
             openwakeword.utils.download_models([WAKE])   # one-time ~5 MB from GitHub releases
         _oww = Model(wakeword_models=[WAKE], inference_framework="onnx")  # tflite has no Windows wheel
-        _vad = _vad or VAD()                              # silero_vad.onnx shipped with openWakeWord, 1 thread
+        _vad = _vad or _vad_model()                       # 1 thread
 
 
 def mic_frames():

@@ -25,24 +25,71 @@ if FROZEN and not os.environ.get("FRIDAY_ROOT"):  # the folder above the exe tha
         _r = os.path.dirname(_r)
     os.environ["FRIDAY_ROOT"] = _r
 if FROZEN:
+    _STD_NONE = {_s: getattr(sys, _s) is None for _s in ("stdin", "stdout", "stderr")}  # before the devnull stand-ins
     for _s in ("stdout", "stderr"):  # windowed exe: no console = None; a print would crash
         if getattr(sys, _s) is None:
             setattr(sys, _s, open(os.devnull, "w", encoding="utf-8"))
-    if "--serve" in sys.argv:  # the Thai-voice worker (tts_th spawns the exe again)
+    if "--serve" in sys.argv:  # the Thai-voice worker (tts_th spawns the exe again; WAVs go back over stdout)
+        import faulthandler, traceback
+        _logs = os.path.join(os.environ.get("FRIDAY_ROOT", os.path.dirname(sys.executable)), "data", "logs")
+        os.makedirs(_logs, exist_ok=True)
+        _log = open(os.path.join(_logs, "tts-worker.log"), "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_log)  # a native crash (DLL, onnxruntime) leaves a trace too, not just Python errors
+        _log.write(f"--- worker {sys.argv[1:]} pid {os.getpid()} std None: {_STD_NONE}\n")
         try:
+            if _STD_NONE["stdin"] or _STD_NONE["stdout"]:
+                # A windowed exe may get its pipes from tts_th but not as Python objects: wrap the OS handles, or the
+                # WAVs would go to the devnull stand-in and FRIDAY would see "tts_th worker died".
+                import msvcrt
+                _k = ctypes.windll.kernel32
+                sys.stdin = os.fdopen(msvcrt.open_osfhandle(_k.GetStdHandle(-10), os.O_RDONLY | os.O_BINARY), "r",
+                                      encoding="utf-8")
+                sys.stdout = os.fdopen(msvcrt.open_osfhandle(_k.GetStdHandle(-11), os.O_WRONLY | os.O_BINARY), "w",
+                                       encoding="utf-8")
+                _log.write("    pipes taken from the OS handles\n")
+            sys.stderr = _log
             import tts_th
             tts_th._serve(*sys.argv[sys.argv.index("--serve") + 1:][:2])
         except BaseException:  # never PyInstaller's crash dialog: log it and exit; FRIDAY speaks with the Windows voice
-            import traceback
-            try:
-                _logs = os.path.join(os.environ.get("FRIDAY_ROOT", os.path.dirname(sys.executable)), "data", "logs")
-                os.makedirs(_logs, exist_ok=True)
-                with open(os.path.join(_logs, "tts-worker.log"), "a", encoding="utf-8") as _f:
-                    _f.write(traceback.format_exc() + "\n")
-            except OSError:
-                pass
+            _log.write(traceback.format_exc() + "\n")
             sys.exit(3)
         sys.exit(0)
+    if "--voice-smoke" in sys.argv:  # CI, on an installed copy: the real voice paths with no mic and no speakers
+        import traceback  # (import checks passed while silero_vad.onnx was missing and the Thai worker died)
+        _rep, _fail = [], False
+
+        def _step(name, fn):
+            global _fail
+            try:
+                _rep.append(f"OK   {name}: {fn()}")
+            except BaseException as _e:
+                _fail = True
+                _rep.append(f"FAIL {name}: {type(_e).__name__}: {_e}\n{traceback.format_exc()}")
+        import faster_whisper  # noqa: F401  (before onnxruntime users, as in the app)
+        import numpy as _np, wakeword, packs, tts_th
+
+        def _wake():
+            wakeword._load()
+            return f"tiny.en from {'installer' if os.path.isfile(os.path.join(wakeword.TINY_DIR, 'model.bin')) else 'HF'}, " \
+                   f"VAD from {'installer' if os.path.isfile(wakeword.SILERO) else 'wheel'}"
+        _step("wake listener loads", _wake)
+        _step("wake on 3 s of silence = no wake", lambda: wakeword._wait_hey_friday(
+            iter([_np.zeros(wakeword.FRAME, _np.int16)] * 40)) is False or (_ for _ in ()).throw(AssertionError("woke on silence")))
+        _step("voice pack download (SHA-256 checked)", lambda: (packs.fetch("voice"), "ok")[1])
+
+        def _wav(fn, text):
+            w = fn(text)
+            if len(w) < 2000:
+                raise AssertionError(f"WAV too short: {len(w)} bytes")
+            return f"{len(w)} bytes"
+        _step("Thai voice (Vanira, FRIDAY.exe --serve worker)", lambda: _wav(lambda t: tts_th.synth_vanira(t, "1"), "สวัสดีค่ะ"))
+        _step("English voice (Piper, FRIDAY-voice.exe)", lambda: _wav(tts_th.synth_en, "Hello there"))
+        tts_th.release()
+        _i = sys.argv.index("--voice-smoke") + 1
+        if _i < len(sys.argv):
+            with open(sys.argv[_i], "w", encoding="utf-8") as _f:
+                _f.write("\n".join(_rep))
+        sys.exit(1 if _fail else 0)
     if "--import-check" in sys.argv:  # CI: every module the exe (and its voice worker) loads must import here — a missing
         import importlib, traceback  # hidden import otherwise shows up only on the owner's PC (soundfile, 2026-11-19)
         _bad = []

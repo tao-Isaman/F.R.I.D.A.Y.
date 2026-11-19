@@ -58,3 +58,13 @@ def test_wake_model_ready_is_quiet(fr, monkeypatch):
     monkeypatch.setattr(wakeword, "_tiny", object())
     assert fr.prepare_wake() is True
     assert not [m for m in fr.ui.panel if "msg" in m]
+
+
+def test_vad_uses_the_installer_copy_when_it_is_there(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(wakeword, "VAD", lambda model_path=None: seen.append(model_path) or "vad")
+    monkeypatch.setattr(wakeword, "SILERO", str(tmp_path / "silero_vad.onnx"))
+    wakeword._vad_model()
+    (tmp_path / "silero_vad.onnx").write_bytes(b"x")
+    wakeword._vad_model()
+    assert seen == [None, str(tmp_path / "silero_vad.onnx")]  # missing: the wheel's own; present: the shipped one
