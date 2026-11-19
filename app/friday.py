@@ -54,42 +54,6 @@ if FROZEN:
             _log.write(traceback.format_exc() + "\n")
             sys.exit(3)
         sys.exit(0)
-    if "--voice-smoke" in sys.argv:  # CI, on an installed copy: the real voice paths with no mic and no speakers
-        import traceback  # (import checks passed while silero_vad.onnx was missing and the Thai worker died)
-        _rep, _fail = [], False
-
-        def _step(name, fn):
-            global _fail
-            try:
-                _rep.append(f"OK   {name}: {fn()}")
-            except BaseException as _e:
-                _fail = True
-                _rep.append(f"FAIL {name}: {type(_e).__name__}: {_e}\n{traceback.format_exc()}")
-        import faster_whisper  # noqa: F401  (before onnxruntime users, as in the app)
-        import numpy as _np, wakeword, packs, tts_th
-
-        def _wake():
-            wakeword._load()
-            return f"tiny.en from {'installer' if os.path.isfile(os.path.join(wakeword.TINY_DIR, 'model.bin')) else 'HF'}, " \
-                   f"VAD from {'installer' if os.path.isfile(wakeword.SILERO) else 'wheel'}"
-        _step("wake listener loads", _wake)
-        _step("wake on 3 s of silence = no wake", lambda: wakeword._wait_hey_friday(
-            iter([_np.zeros(wakeword.FRAME, _np.int16)] * 40)) is False or (_ for _ in ()).throw(AssertionError("woke on silence")))
-        _step("voice pack download (SHA-256 checked)", lambda: (packs.fetch("voice"), "ok")[1])
-
-        def _wav(fn, text):
-            w = fn(text)
-            if len(w) < 2000:
-                raise AssertionError(f"WAV too short: {len(w)} bytes")
-            return f"{len(w)} bytes"
-        _step("Thai voice (Vanira, FRIDAY.exe --serve worker)", lambda: _wav(lambda t: tts_th.synth_vanira(t, "1"), "สวัสดีค่ะ"))
-        _step("English voice (Piper, FRIDAY-voice.exe)", lambda: _wav(tts_th.synth_en, "Hello there"))
-        tts_th.release()
-        _i = sys.argv.index("--voice-smoke") + 1
-        if _i < len(sys.argv):
-            with open(sys.argv[_i], "w", encoding="utf-8") as _f:
-                _f.write("\n".join(_rep))
-        sys.exit(1 if _fail else 0)
     if "--import-check" in sys.argv:  # CI: every module the exe (and its voice worker) loads must import here — a missing
         import importlib, traceback  # hidden import otherwise shows up only on the owner's PC (soundfile, 2026-11-19)
         _bad = []
@@ -4973,6 +4937,136 @@ def run_tray(history):
         shutdown()
 
 
+def voice_smoke(report):
+    """FRIDAY.exe --voice-smoke <report>: the owner's voice path end to end, on an installed copy (CI runs it after a
+    silent install), with no mic, speakers or key. Each line in the report is evidence: what came out, not "loaded".
+    Downloads go the way the owner's do (faster-whisper, packs.fetch). Exit 1 when any step fails."""
+    import traceback
+    lines, failed = [], []
+
+    def step(name, fn):
+        t0 = time.time()
+        try:
+            lines.append(f"OK   {name} ({time.time() - t0:.1f} s): {fn()}")
+        except BaseException as e:
+            failed.append(name)
+            lines.append(f"FAIL {name}: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        print(lines[-1])
+
+    def need(cond, why):
+        if not cond:
+            raise AssertionError(why)
+
+    def frames_of(audio16k, tail_s=1.5):  # float32 16 kHz -> the int16 blocks a mic stream yields, plus silence
+        a = np.concatenate([audio16k, np.zeros(int(tail_s * 16000), np.float32)])
+        a = (np.clip(a, -1, 1) * 32767).astype(np.int16)
+        a = a[: len(a) // wakeword.FRAME * wakeword.FRAME]
+        return list(a.reshape(-1, wakeword.FRAME))
+
+    clips = {}
+
+    # 1. the wake listener as shipped: tiny.en + Silero VAD from the installer, no download
+    def wake_loads():
+        wakeword._load()
+        tiny = os.path.isfile(os.path.join(wakeword.TINY_DIR, "model.bin"))
+        vad = os.path.isfile(wakeword.SILERO)
+        need(tiny and vad, f"not from the installer: tiny.en {tiny}, silero {vad}")
+        return f"tiny.en {wakeword.TINY_DIR} · silero {wakeword.SILERO}"
+    step("wake listener loads from the installer", wake_loads)
+
+    # 2. voice pack the owner's way
+    step("voice pack download (packs.fetch, SHA-256)", lambda: (packs.fetch("voice"), f"{packs.size_mb('voice')} MB in {ROOT}")[1])
+
+    # 3. voices: English through FRIDAY-voice.exe, Thai through the FRIDAY.exe --serve worker, and the app's tts_wav
+    def english():
+        w = tts_th.synth_en("Hey Friday, what time is it?")
+        clips["en_wake"] = wav_to_16k(w)
+        w2 = tts_th.synth_en("Hello, please open the music player.")
+        clips["en"] = wav_to_16k(w2)
+        need(len(clips["en_wake"]) > 16000, f"short English clip: {len(clips['en_wake'])} samples")
+        return f"{len(w)} + {len(w2)} bytes WAV"
+    step("English voice (Piper, FRIDAY-voice.exe)", english)
+
+    def thai():
+        w = tts_th.synth_vanira("สวัสดีค่ะ วันนี้อากาศดีมาก", "1")
+        clips["th"] = wav_to_16k(w)
+        need(len(clips["th"]) > 16000, f"short Thai clip: {len(clips['th'])} samples")
+        return f"{len(w)} bytes WAV, {len(clips['th']) / 16000:.1f} s"
+    step("Thai voice (Vanira, FRIDAY.exe --serve worker)", thai)
+
+    def app_tts():
+        w = tts_wav("ทดสอบเสียงพูดภาษาไทย")
+        need(not TTS_OFF, f"the app fell back to the Windows voice: {TTS_OFF}")
+        return f"{len(w)} bytes WAV through tts_wav (no fallback)"
+    step("app speaks Thai with the neural voice (tts_wav)", app_tts)
+
+    # 4. VAD and the wake word on real speech
+    def vad():
+        wakeword._load()
+        f = frames_of(clips["en_wake"])
+        speech = max(wakeword._vad.predict(x, frame_size=640) for x in f)
+        wakeword._vad.reset_states()
+        quiet = max(wakeword._vad.predict(x, frame_size=640) for x in frames_of(np.zeros(16000, np.float32)))
+        need(speech >= wakeword.SPEECH_PROB > quiet, f"speech {speech:.2f} / silence {quiet:.2f}")
+        return f"speech prob {speech:.2f}, silence {quiet:.2f}"
+    step("Silero VAD tells speech from silence", vad)
+
+    def wake():
+        heard = wakeword.wait_for_wake(iter(frames_of(clips["en_wake"])))
+        silent = wakeword.wait_for_wake(iter(frames_of(np.zeros(3 * 16000, np.float32))))
+        need(heard and not silent, f"'Hey Friday' clip: {heard}, silence: {silent}")
+        return "'Hey Friday' clip wakes it, 3 s of silence does not"
+    step("wake word fires on a spoken 'Hey Friday'", wake)
+
+    # 5. Whisper: the models the owner downloads, then the app's own transcribe()
+    def whisper_models():
+        for m in BIG_EARS:
+            _download_model(m)
+        need(_ears_cached(), "models not in the cache after download")
+        return ", ".join(BIG_EARS) + f" on {WHISPER_DEVICE}"
+    step("Whisper models download (faster-whisper, like ensure_ears)", whisper_models)
+
+    def hear_en():
+        text = transcribe(clips["en"])
+        need(re.search(r"music|open|hello", text, re.I), f"got: {text!r}")
+        return repr(text)
+    step("transcribe English speech", hear_en)
+
+    def hear_th():
+        text = transcribe(clips["th"])
+        need(re.search(r"[\u0E00-\u0E7F]", text) and re.search(r"สวัสดี|อากาศ", text), f"got: {text!r}")
+        return repr(text)
+    step("transcribe Thai speech", hear_th)
+
+    # 6. first run: the key window's check and the real DPAPI store, with a fake Anthropic (no key, no network)
+    def first_run():
+        import tempfile
+        import brain_claude
+        real_models, real_secrets = brain_claude.models, security.SECRETS
+        security.SECRETS = os.path.join(tempfile.mkdtemp(), "secrets.dat")
+
+        class _401(Exception):
+            status_code = 401
+        try:
+            brain_claude.models = lambda k: (_ for _ in ()).throw(_401("invalid x-api-key"))
+            bad = brain.check_key("anthropic", "sk-ant-bad")
+            brain_claude.models = lambda k: ["claude-sonnet-5-5"]
+            good = brain.check_key("anthropic", "sk-ant-good")
+            need(bad == (False, "API key ไม่ถูกต้องหรือไม่มีสิทธิ์") and good == (True, ["claude-sonnet-5-5"]), f"{bad} {good}")
+            brain.set_key("anthropic", "sk-ant-good")
+            need(brain.key("anthropic") == "sk-ant-good", "DPAPI round trip")
+            need(b"sk-ant-good" not in open(security.SECRETS, "rb").read(), "key stored in clear text")
+            return f"wrong key -> {bad[1]!r}; good key -> {good[1]}; DPAPI round trip, not in clear text"
+        finally:
+            brain_claude.models, security.SECRETS = real_models, real_secrets
+    step("first-run key check + DPAPI store (fake Anthropic)", first_run)
+
+    tts_th.release()
+    with open(report, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + f"\n\n{'FAILED: ' + ', '.join(failed) if failed else 'VOICE SMOKE OK'}\n")
+    sys.exit(1 if failed else 0)
+
+
 def prefetch():
     """§75 the installer runs "FRIDAY.exe --prefetch": every model FRIDAY would download on first use, now (ears:
     Whisper turbo + Thai + tiny.en for the wake word; search: MiniLM). Exit code 1 = something failed (no internet)."""
@@ -5007,6 +5101,8 @@ def main():
         return selftest()
     if "--prefetch" in sys.argv:
         return prefetch()
+    if "--voice-smoke" in sys.argv:  # CI on an installed copy: report path follows the flag
+        return voice_smoke(sys.argv[sys.argv.index("--voice-smoke") + 1])
     global panel, MUTED, SESS
     MUTED = "--mute" in sys.argv
     SESS = sessions.Sessions()
