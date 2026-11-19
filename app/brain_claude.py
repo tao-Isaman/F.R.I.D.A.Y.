@@ -50,10 +50,39 @@ def render(messages):
     return out
 
 
+CACHE = {"type": "ephemeral"}  # 5-minute TTL: a conversation's turns and tool rounds are seconds to minutes apart
+
+
+def system_blocks(messages):
+    """FRIDAY's system prompt as cache-friendly blocks. friday.py marks where its stable part ends ("_cache_upto": the
+    identity, rules, memory index and skills — the same every turn); tools + that part are one cached prefix. The rest
+    (time, notes picked for this message, per-turn hints) follows uncached, so it never invalidates the prefix."""
+    out = []
+    for m in messages:
+        if m.get("role") != "system" or not m.get("content"):
+            continue
+        text, cut = m["content"], m.get("_cache_upto")
+        if cut and 0 < cut < len(text):
+            out += [{"type": "text", "text": text[:cut], "cache_control": CACHE}, {"type": "text", "text": text[cut:]}]
+        else:
+            out.append({"type": "text", "text": text, "cache_control": CACHE})
+    marked = [b for b in out if "cache_control" in b]
+    for b in marked[:-1]:  # one explicit breakpoint, on the last stable block (max 4 per request; automatic takes one)
+        del b["cache_control"]
+    return out
+
+
+def usage(r):
+    u = getattr(r, "usage", None)
+    g = lambda n: int(getattr(u, n, 0) or 0)
+    return {"input": g("input_tokens"), "output": g("output_tokens"), "cache_read": g("cache_read_input_tokens"),
+            "cache_write": g("cache_creation_input_tokens")}
+
+
 def chat(key, model, messages, tools, schema, max_tokens):
-    system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
-    kw = {"model": model, "max_tokens": max_tokens, "messages": render(messages)}
-    if system:
+    kw = {"model": model, "max_tokens": max_tokens, "messages": render(messages),
+          "cache_control": CACHE}  # automatic breakpoint on the last block: the turn's tool rounds reuse each other
+    if system := system_blocks(messages):
         kw["system"] = system
     if tools:
         kw["tools"] = [{"name": t["function"]["name"], "description": t["function"].get("description", ""),
@@ -74,7 +103,7 @@ def chat(key, model, messages, tools, schema, max_tokens):
         return {"role": "assistant", "content": "ขออภัยค่ะ คำขอนี้ Claude ไม่ตอบ", "_provider": "anthropic"}
     text = "".join(b.text for b in r.content if b.type == "text")
     calls = [{"id": b.id, "function": {"name": b.name, "arguments": dict(b.input or {})}} for b in r.content if b.type == "tool_use"]
-    msg = {"role": "assistant", "content": text, "_provider": "anthropic",
+    msg = {"role": "assistant", "content": text, "_provider": "anthropic", "_usage": usage(r),
            "_raw": [b.model_dump(exclude_none=True) for b in r.content]}
     if calls:
         msg["tool_calls"] = calls

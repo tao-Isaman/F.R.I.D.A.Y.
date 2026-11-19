@@ -84,7 +84,7 @@ Exception, shown in the side panel and never read aloud: when the user asks for 
 sentence; to show a picture that is a file on this PC, add ![](C:\\full\\path.png) (or ![[name.png]] for vault notes) on its own line.
 You CAN show pictures: when asked to show one and you have no path, call find_images, then put the chosen path in ![](...).
 You speak with a woman's voice: in Thai refer to yourself as "ฉัน" and end polite sentences with "ค่ะ"/"คะ" (never "ครับ").
-Use tools to act on the PC when asked. Never invent tool results. Current local time: {now}.
+Use tools to act on the PC when asked. Never invent tool results. The current time is given at the end of this prompt.
 General-knowledge questions (science, history, comparisons, how-to...): answer from your own knowledge, no tools needed.
 Facts about the user's own life (their name, people, health, projects, preferences): only from your notes, never add
 details the notes don't contain; if the notes don't say, answer that you don't know yet (don't repeat the question back).
@@ -2572,8 +2572,8 @@ def chat(history, extra=""):
     _project_ok.clear()  # §102 the same for project edits/commands
     user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
     context = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in history[-5:-1] if m["role"] in ("user", "assistant") and m.get("content"))
-    system = SYSTEM.format(now=datetime.datetime.now().strftime("%A %d %B %Y %H:%M"), memory=memory.prompt(), rules=rules.prompt(),
-                           skills=skills.prompt())
+    system = SYSTEM.format(memory=memory.prompt(), rules=rules.prompt(), skills=skills.prompt())
+    stable = len(system)  # everything above is the same every turn: the cloud brain caches it (brain_claude.system_blocks)
     shot = None
     if SCREEN_RE.search(user) and not blocked("window"):  # §56 "ดูหน้าจอหน่อย" / "หน้าจอนี้ error อะไร"
         try:
@@ -2665,7 +2665,7 @@ def chat(history, extra=""):
         kept = set(DOC_TOOLS) | ((PROJECT_READ | PROJECT_ACT) if project_local else set())  # §102 review: project results too
         window = [{**m, "content": "(text kept on the PC — read it again if needed)"}
                   if m.get("role") == "tool" and m.get("tool_name") in kept else m for m in window]
-    messages = [{"role": "system", "content": system}] + window
+    messages = [{"role": "system", "content": system, "_cache_upto": stable}] + window
     if shot and messages[-1].get("role") == "user":  # the picture rides on this turn only; history keeps the text
         messages[-1] = {**messages[-1], "images": [shot[2]]}
     told, nudged = False, set()  # nudged: tools already asked for once

@@ -194,7 +194,9 @@ def chat(messages, tools=None, schema=None, temperature=0.3, max_tokens=None, so
                 else:
                     import brain_openai
                     msg = brain_openai.chat(k, model, messages, tools, schema, max_tokens or 8000)
-                security.audit(source, "brain_cloud", f"{provider}:{model}", "done", f"{len(messages)} messages")
+                u = msg.get("_usage") or {}
+                security.audit(source, "brain_cloud", f"{provider}:{model}", "done", f"{len(messages)} messages" + (
+                    f" · in {u['input']} · cache read {u['cache_read']} · cache write {u['cache_write']} · out {u['output']}" if u else ""))
                 _down.pop(provider, None)
                 return msg
             except Exception as e:
