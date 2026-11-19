@@ -138,16 +138,24 @@ jobs:
           Get-Content voice-smoke.txt
           if (Test-Path D:\fridaytest\data\logs\tts-worker.log) { "--- tts-worker.log"; Get-Content D:\fridaytest\data\logs\tts-worker.log -Tail 60 }
           if ($p.ExitCode -ne 0) { Write-Error "voice smoke failed (exit $($p.ExitCode))"; exit 1 }
+      - name: collect the evidence under the workspace (upload-artifact only takes files below it)
+        if: always()
+        shell: pwsh
+        run: |
+          $ev = Join-Path $env:GITHUB_WORKSPACE "evidence"
+          New-Item -ItemType Directory -Force $ev | Out-Null
+          foreach ($f in @("D:\friday\voice-smoke.txt", "D:\friday\install.log", "D:\friday\import-check.txt", "D:\friday\size-report.txt")) {
+            if (Test-Path $f) { Copy-Item $f $ev }
+          }
+          if (Test-Path D:\fridaytest\data\logs) { Copy-Item D:\fridaytest\data\logs (Join-Path $ev "app-logs") -Recurse }
+          Get-ChildItem $ev -Recurse | Format-Table FullName, Length
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: voice-smoke-${{ github.sha }}
-          path: |
-            D:/friday/voice-smoke.txt
-            D:/friday/install.log
-            D:/fridaytest/data/logs/
+          path: evidence/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: FRIDAY-claude-edition-${{ github.sha }}

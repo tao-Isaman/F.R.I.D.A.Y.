@@ -38,6 +38,7 @@ hidden += ["packs", "ui", "tts_th", "memory", "rules", "docsearch", "wakeword", 
 a = Analysis(["app/friday.py"], pathex=["app"], datas=datas, binaries=binaries, hiddenimports=hidden,
              excludes=["torch", "tensorflow", "matplotlib", "IPython", "pytest"])
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="FRIDAY", console=False, icon="assets/friday.ico",
+exe = EXE(pyz, a.scripts, [('X utf8_mode=1', None, 'OPTION')],  # UTF-8 mode: vaniratts opens JSON with no encoding (cp1252 broke Thai)
+          exclude_binaries=True, name="FRIDAY", console=False, icon="assets/friday.ico",
           upx=False, version=None)
 coll = COLLECT(exe, a.binaries, a.datas, name="FRIDAY", upx=False)

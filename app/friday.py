@@ -4965,6 +4965,13 @@ def voice_smoke(report):
 
     clips = {}
 
+    # 0. UTF-8 mode (friday.spec): without it vaniratts' vocab.json fails to load under cp1252 (run 44523396354)
+    def utf8():
+        import locale
+        need(sys.flags.utf8_mode == 1, f"utf8_mode={sys.flags.utf8_mode}, preferred encoding {locale.getpreferredencoding(False)}")
+        return f"sys.flags.utf8_mode=1, preferred encoding {locale.getpreferredencoding(False)}"
+    step("FRIDAY.exe runs in UTF-8 mode", utf8)
+
     # 1. the wake listener as shipped: tiny.en + Silero VAD from the installer, no download
     def wake_loads():
         wakeword._load()
