@@ -4947,7 +4947,8 @@ def voice_smoke(report):
     def step(name, fn):
         t0 = time.time()
         try:
-            lines.append(f"OK   {name} ({time.time() - t0:.1f} s): {fn()}")
+            got = fn()
+            lines.append(f"OK   {name} ({time.time() - t0:.1f} s): {got}")
         except BaseException as e:
             failed.append(name)
             lines.append(f"FAIL {name}: {type(e).__name__}: {e}\n{traceback.format_exc()}")
@@ -5039,10 +5040,13 @@ def voice_smoke(report):
         return repr(text)
     step("transcribe English speech", hear_en)
 
-    def hear_th():
-        text = transcribe(clips["th"])
-        need(re.search(r"[\u0E00-\u0E7F]", text) and re.search(r"สวัสดี|อากาศ", text), f"got: {text!r}")
-        return repr(text)
+    def hear_th():  # independent of the Thai-voice step: without a Vanira clip, the Windows voice makes one
+        clip, src = clips.get("th"), "Vanira"
+        if clip is None:
+            clip, src = wav_to_16k(asyncio.run(_synth("สวัสดีค่ะ วันนี้อากาศดีมาก"))), "Windows voice (Vanira step failed)"
+        text = transcribe(clip)
+        need(re.search(r"[\u0E00-\u0E7F]", text) and re.search(r"สวัสดี|อากาศ", text), f"got: {text!r} (clip: {src})")
+        return f"{text!r} (clip: {src})"
     step("transcribe Thai speech", hear_th)
 
     # 6. first run: the key window's check and the real DPAPI store, with a fake Anthropic (no key, no network)

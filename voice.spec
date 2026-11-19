@@ -13,6 +13,6 @@ for pkg in ("piper", "onnxruntime"):
 a = Analysis(["app/tts_th.py"], pathex=["app"], datas=datas, binaries=binaries, hiddenimports=hidden,
              excludes=["tltk", "gensim", "sklearn", "pandas", "nltk", "scipy", "matplotlib", "tkinter"])
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [('X utf8_mode=1', None, 'OPTION')],  # UTF-8 mode: vaniratts opens JSON with no encoding (cp1252 broke Thai)
+exe = EXE(pyz, a.scripts, [('X utf8=1', None, 'OPTION')],  # UTF-8 mode: vaniratts opens JSON with no encoding (cp1252 broke Thai)
           exclude_binaries=True, name="FRIDAY-voice", console=True, icon="assets/friday.ico", upx=False)
 coll = COLLECT(exe, a.binaries, a.datas, name="FRIDAY-voice", upx=False)

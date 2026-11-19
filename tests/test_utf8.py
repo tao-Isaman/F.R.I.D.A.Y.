@@ -31,4 +31,6 @@ def test_utf8_mode_loads_it(tmp_path):
 def test_both_exes_are_built_in_utf8_mode():
     for spec in ("friday.spec", "voice.spec"):
         src = open(spec, encoding="utf-8").read()
-        assert "('X utf8_mode=1', None, 'OPTION')" in src, f"{spec}: FRIDAY.exe / FRIDAY-voice.exe must run in UTF-8 mode"
+        # PyInstaller's spelling (doc/spec-files.rst): 'X utf8=1'. 'X utf8_mode=1' was silently ignored (run 44525010833).
+        assert "('X utf8=1', None, 'OPTION')" in src, f"{spec}: FRIDAY.exe / FRIDAY-voice.exe must run in UTF-8 mode"
+        assert "utf8_mode=1', None" not in src, f"{spec}: wrong option name"
