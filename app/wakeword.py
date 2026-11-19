@@ -38,6 +38,39 @@ NO_SPEECH_TIMEOUT = 4.0  # s after wake with no speech at all -> give up (return
 MAX_UTTERANCE = 15.0     # s hard cap
 
 _oww = _vad = _mic = _tiny = None
+ROOT = os.environ.get("FRIDAY_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TINY_DIR = os.path.join(ROOT, "models", "tiny.en")  # shipped by the installer (~75 MB) so the wake word works at once
+DEAD_MIC_S = 3.0  # this long of exact zeros = the mic is blocked (Windows privacy setting) or muted at the driver
+ON_DEAD_MIC = None  # friday.py sets it: called once per stream when DeadMicWatch fires
+
+
+class DeadMicWatch:
+    """True once, when a stream delivered nothing but exact zeros for `seconds`. Any real sample (even a quiet room's
+    noise) ends the watch: a blocked mic on Windows gives no error, only silence, so this is the only sign of it."""
+
+    def __init__(self, seconds=DEAD_MIC_S):
+        self.need, self.n, self.done = max(1, int(seconds * SR / FRAME)), 0, False
+
+    def __call__(self, frame):
+        if self.done:
+            return False
+        if np.any(frame):
+            self.done = True
+            return False
+        self.n += 1
+        if self.n >= self.need:
+            self.done = True
+            return True
+        return False
+
+
+def _watched(stream):
+    watch = DeadMicWatch()
+    while True:
+        f = stream.read(FRAME)[0][:, 0]
+        if watch(f) and ON_DEAD_MIC:
+            ON_DEAD_MIC()
+        yield f
 _pending = None  # (audio float32, complete) left over from the wake segment: the command said in the same breath
 
 
@@ -46,7 +79,8 @@ def _load():
     if WAKE == "hey_friday":
         if _tiny is None:
             from faster_whisper import WhisperModel
-            _tiny = WhisperModel("tiny.en", device="cpu", compute_type="int8", cpu_threads=2)  # ~75 MB, no VRAM
+            src = TINY_DIR if os.path.isfile(os.path.join(TINY_DIR, "model.bin")) else "tiny.en"  # else HF, ~75 MB
+            _tiny = WhisperModel(src, device="cpu", compute_type="int8", cpu_threads=2)  # no VRAM
         _vad = _vad or VAD()
         return
     if _oww is None:
@@ -60,15 +94,16 @@ def _load():
 def mic_frames():
     """Yields int16 blocks from the default mic until the generator is closed (which closes the stream)."""
     with sd.InputStream(samplerate=SR, channels=1, dtype="int16", blocksize=FRAME) as s:
-        while True:
-            yield s.read(FRAME)[0][:, 0]
+        yield from _watched(s)
 
 
 def frames_until(stop):
     """Mic blocks until `stop` (threading.Event) is set — for listening for the wake word while FRIDAY speaks (§54)."""
     with sd.InputStream(samplerate=SR, channels=1, dtype="int16", blocksize=FRAME) as s:
-        while not stop.is_set():
-            yield s.read(FRAME)[0][:, 0]
+        for f in _watched(s):
+            if stop.is_set():
+                return
+            yield f
 
 
 def close_mic():

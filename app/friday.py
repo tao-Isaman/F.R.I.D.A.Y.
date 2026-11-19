@@ -15,7 +15,7 @@ IMPORT_CHECK = (  # FRIDAY.exe --import-check <report>: app modules + the librar
     "soundfile", "vaniratts", "vachanatts", "vachanatts.en2th", "vachanatts.voice", "vachana_g2p", "pythainlp",
     "onnxruntime", "sherpa_onnx", "openwakeword", "openwakeword.model", "fastembed",
     "huggingface_hub", "webview", "pystray", "anthropic", "docx", "pptx", "openpyxl", "pypdf", "cryptography", "segno",
-    "PIL", "comtypes", "pycaw", "monitorcontrol", "serial", "winrt.windows.media.control",
+    "PIL", "comtypes", "pycaw", "monitorcontrol", "serial", "sounddevice", "winrt.windows.media.control",
     "winrt.windows.security.credentials.ui", "winrt.windows.media.speechsynthesis", "winrt.windows.storage.streams",
 )
 FROZEN = getattr(sys, "frozen", False)  # §69 FRIDAY.exe (PyInstaller): code inside the exe, data in E:\friday
@@ -3397,7 +3397,8 @@ def ensure_ears(ask=True):
     EARS["asked"] = True
     need = ([] if whisper_ok else ["โมเดลฟังเสียง ~3 GB"]) + ([] if voice_ok else [f"เสียงพูด ~{packs.size_mb('voice')} MB"])
     if not confirm(f"ดาวน์โหลด{' + '.join(need)} ตอนนี้ไหมคะ? ระหว่างโหลดพิมพ์คุยได้ตามปกติ", ""):
-        panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดชุดเสียง — พิมพ์คุยได้ตามปกติ ลองพูดใหม่เมื่อไหร่ก็ได้หลังเปิด FRIDAY ใหม่"})
+        EARS["declined"] = True
+        panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดชุดเสียง — พิมพ์คุยได้ตามปกติ โหลดทีหลังได้: คลิกขวาไอคอน › ดาวน์โหลดโมเดลเสียง…"})
         return False
     gpu = packs.has_nvidia() and not packs.installed("gpu") and confirm(
         f"พบการ์ดจอ NVIDIA — โหลด GPU pack (~{packs.size_mb('gpu')} MB จาก PyPI ของ NVIDIA) ให้ฟังเสียงเร็วขึ้นไหมคะ? "
@@ -4537,14 +4538,88 @@ def _turn(history, text):
         panel.send(state="idle")  # wake_loop sets "listening" again when it keeps the conversation open
 
 
+MIC_HELP = "Settings › Privacy & security › Microphone › เปิด \"Let desktop apps access your microphone\""
+
+
+def mic_status():
+    """(ok, text for the panel): the default input device by name, or why there is none."""
+    try:
+        d = sd.query_devices(kind="input")
+        return True, f"🎤 ฟังจาก: {d['name']}"
+    except Exception as e:
+        print(f"  ไม่พบไมค์: {type(e).__name__}: {e}")
+        return False, "🎤 ไม่พบไมค์ — เสียบไมค์ หรือเลือกอุปกรณ์ Input ใน Settings › System › Sound"
+
+
+def on_dead_mic():
+    """wakeword.DeadMicWatch fired: the stream is open but Windows hands over only silence (privacy switch / muted)."""
+    print("  ไมค์ส่งมาแต่ความเงียบสนิท (0) — สิทธิ์ไมค์ของ Windows ปิดอยู่หรือไมค์ถูกปิดเสียง")
+    panel.send(msg={"role": "tool", "text": f"🎤 ไมค์เงียบสนิท — Windows อาจปิดสิทธิ์ไมค์ไว้: {MIC_HELP} (หรือไมค์ถูกปิดเสียง)"})
+
+
+wakeword.ON_DEAD_MIC = on_dead_mic
+
+
+def prepare_wake():
+    """Load the wake-word listener (Whisper tiny.en + Silero VAD) and say so: the installer ships tiny.en; an older
+    install downloads it (~75 MB) — which used to happen silently, so a slow or failed download looked like a deaf mic."""
+    if wakeword._tiny is None and not os.path.isfile(os.path.join(wakeword.TINY_DIR, "model.bin")):
+        panel.send(msg={"role": "tool", "text": "⬇ กำลังเตรียมตัวฟังคำปลุก \"Hey Friday\" (ครั้งแรกโหลด ~75 MB)…"})
+    try:
+        wakeword._load()
+        return True
+    except Exception as e:
+        print(f"  โหลดตัวฟังคำปลุกไม่ได้: {type(e).__name__}: {e}")
+        panel.send(msg={"role": "tool", "text": f"โหลดตัวฟังคำปลุกไม่สำเร็จ ({type(e).__name__}: {str(e)[:80]}) — "
+                                                 "ตรวจเน็ต แล้วคลิกขวาไอคอน › ดาวน์โหลดโมเดลเสียง…"})
+        return False
+
+
+def offer_voice(manual=False):
+    """Claude edition: offer the voice downloads without waiting for the owner to speak (that was a chicken and egg:
+    the question came only after a heard "Hey Friday"). At startup once (a "no" is remembered); from the tray menu
+    any time. Already complete: from the menu, offer the GPU pack if there is a card for it."""
+    if _ears_cached() and packs.installed("voice"):
+        if not manual:
+            return
+        if packs.has_nvidia() and not packs.installed("gpu") and confirm(
+                f"ชุดเสียงครบแล้วค่ะ — โหลด GPU pack (~{packs.size_mb('gpu')} MB) ให้ฟังเสียงเร็วขึ้นไหมคะ?", ""):
+            def gpu():
+                try:
+                    packs.fetch("gpu", progress=_progress("โหลด GPU pack"))
+                    panel.send(msg={"role": "tool", "text": "✅ โหลด GPU pack แล้ว — เปิด FRIDAY ใหม่เพื่อให้ฟังเสียงด้วยการ์ดจอ"})
+                except Exception as e:
+                    panel.send(msg={"role": "tool", "text": f"โหลด GPU pack ไม่สำเร็จ ({type(e).__name__}) — ลองใหม่ได้จากเมนู"})
+            _background(gpu)
+        else:
+            panel.send(msg={"role": "tool", "text": "✅ ชุดเสียงครบแล้วค่ะ"})
+        return
+    if not manual and rules.settings().get("voice_offer") == "declined":
+        return
+    if manual:
+        EARS.pop("asked", None)
+    ensure_ears()
+    if EARS.get("declined") and not manual:
+        with security.own_write(rules.SETTINGS):
+            rules.set_setting("voice_offer", "declined")  # don't ask at every start; the tray menu still offers it
+
+
 def wake_loop(history):
     """Hands-free: the wake phrase once, then keep talking without it until FOLLOWUP_S of silence. Ctrl+C returns to typing."""
     print(f"  🎧 โหมดสั่งด้วยเสียง — พูด \"{WAKE_NAME}\" ครั้งเดียว แล้วคุยต่อได้เลย (เงียบ {FOLLOWUP_S} วินาที = พัก)"
           " | พูด \"พอแล้ว\" = พัก | Ctrl+C กลับไปพิมพ์")
     failures = 0
+    ok, text = mic_status()
+    panel.send(msg={"role": "tool", "text": text})
     try:
         while failures < 3:  # mic unplugged / CUDA OOM: retry a little, then fall back to typing instead of crashing
             try:
+                if not ok:
+                    ok, text = mic_status()
+                    if not ok:
+                        raise OSError("no input device")
+                if not prepare_wake():
+                    raise OSError("wake-word model not loaded")
                 wakeword.wait_for_wake()
                 winsound.Beep(880, 120)  # heard you: conversation starts
                 timeout = FIRST_COMMAND_S  # after a bare "Hey Friday" people pause before the command (4 s was too short)
@@ -4593,6 +4668,8 @@ def wake_loop(history):
                 failures += 1
                 wakeword.close_mic()
                 print(f"  ไมค์/เสียงผิดพลาด: {type(e).__name__}: {e}")
+                panel.send(msg={"role": "tool", "text": f"🎤 ใช้ไมค์ไม่ได้ ({type(e).__name__}: {str(e)[:80]}) — "
+                                                         f"ลองใหม่อัตโนมัติ · ถ้ายังเงียบ: {MIC_HELP}"})
             finally:
                 BARGE_IN.clear()  # code review §58: an error/quit left it on and every later say() ran a second listener
         print("  ผิดพลาดซ้ำ 3 ครั้ง — กลับสู่โหมดพิมพ์ (ตรวจไมค์ใน Windows Settings → Sound → Input)")
@@ -4720,6 +4797,7 @@ def start_tray(history):
                    checked=(lambda n: lambda _: rules.settings().get("panel_monitor") == n)(s["name"]), radio=True)
               for i, s in enumerate(windows.screens())]])),
         item("สมอง", pystray.Menu(brain_items)),  # §84
+        item("ดาวน์โหลดโมเดลเสียง…", bg(offer_voice, True)),  # Claude edition: any time, not only after a heard wake word
         item("เพื่อน FRIDAY", pystray.Menu(lambda: peer_menu(item, bg, lambda m: icon.notify(m, "FRIDAY"),
                                                               pystray.Menu, pystray.Menu.SEPARATOR))),  # §113
         item("มือถือ", pystray.Menu(lambda: [  # §70
@@ -4903,7 +4981,7 @@ def main():
         print(f"  (ตรวจความปลอดภัยไม่ได้: {e})")
     panel = Panel()
     if TRAY:
-        threading.Thread(target=first_run_key, daemon=True).start()  # Claude edition: ask for the key on first run
+        threading.Thread(target=lambda: (first_run_key(), offer_voice()), daemon=True).start()  # key, then voices
     elif brain.current()[0] in brain.KEY and not brain.key(brain.current()[0]):
         print(f"  🔑 ยังไม่มี API key ของ {brain.NAMES[brain.current()[0]]} — เปิดแบบ tray แล้วใส่ key ในหน้าต่างที่ขึ้นมา")
     threading.Thread(target=reminder_loop, daemon=True).start()  # §50

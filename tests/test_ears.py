@@ -173,3 +173,26 @@ def test_a_broken_thai_voice_falls_back_once_and_stays_off(fr, monkeypatch):
     assert len(calls) == 1 and used == ["windows", "windows"]  # no new worker for every reply
     told = [m["msg"]["text"] for m in fr.ui.panel if "msg" in m]
     assert sum("เสียง Windows" in t for t in told) == 1, told
+
+
+def test_voice_is_offered_at_startup_without_speaking(fr, monkeypatch):
+    _setup(fr, monkeypatch, have=())
+    fr.offer_voice()
+    assert len(fr.ui.confirms) == 1 and fr.ui.packs.fetched == ["voice"]
+
+
+def test_a_startup_no_is_remembered_but_the_menu_still_works(fr, monkeypatch):
+    import rules
+    _setup(fr, monkeypatch, have=(), answer=False)
+    fr.offer_voice()
+    assert rules.settings().get("voice_offer") == "declined"
+    fr.offer_voice()  # next start: not asked again
+    assert len(fr.ui.confirms) == 1
+    fr.offer_voice(manual=True)  # tray › ดาวน์โหลดโมเดลเสียง…
+    assert len(fr.ui.confirms) == 2
+
+
+def test_menu_when_complete_offers_the_gpu_pack(fr, monkeypatch):
+    _setup(fr, monkeypatch, cached=fr.BIG_EARS, have=("voice",), nvidia=True, answer=True)
+    fr.offer_voice(manual=True)
+    assert fr.ui.packs.fetched == ["gpu"] and "GPU" in fr.ui.confirms[0]

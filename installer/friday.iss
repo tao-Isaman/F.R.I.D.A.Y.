@@ -78,7 +78,9 @@ Source: "..\dist\FRIDAY-voice\*"; DestDir: "{app}\voice"; Flags: recursesubdirs 
 Source: "..\skills\*"; DestDir: "{app}\skills"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist
 Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "stage\config\settings.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist uninsneveruninstall
-;  Claude edition: no models and no CUDA DLLs in here — FRIDAY fetches them from their own sources on first voice
+;  Claude edition: only the wake-word model (Whisper tiny.en, ~75 MB) so "Hey Friday" works at once; no other models
+Source: "..\models\tiny.en\*"; DestDir: "{app}\models\tiny.en"; Flags: ignoreversion
+;  and no CUDA DLLs in here — FRIDAY fetches them from their own sources on first voice
 ;  use (app\packs.py: voices + owner's-voice model; GPU pack = NVIDIA's cuBLAS/cuDNN wheels from PyPI)
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "cua\*"; DestDir: "{tmp}\cua"; Flags: deleteafterinstall; Tasks: cuadriver

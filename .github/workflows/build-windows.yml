@@ -69,6 +69,11 @@ jobs:
           .venv-tts\Scripts\python -m pip install --upgrade pip
           .venv-tts\Scripts\pip install piper-tts onnxruntime "numpy<2" pyinstaller
           .venv-tts\Scripts\pip freeze > pip-freeze-voice.txt
+      - name: wake-word model shipped in the installer (Whisper tiny.en, MIT, ~75 MB)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          .venv\Scripts\python -c "from faster_whisper.utils import download_model; download_model('tiny.en', output_dir='models/tiny.en')"
+          Get-ChildItem models\tiny.en | Format-Table Name, Length
       - name: PyInstaller
         run: |
           $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
