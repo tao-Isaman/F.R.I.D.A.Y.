@@ -2,11 +2,12 @@
 
 Who FRIDAY is (system prompt), what she remembers (vault notes), rules, sessions and every safety gate stay in
 friday.py on this PC — only the model behind chat() changes. Providers:
-  ollama     a model on this PC (default qwen3.5:4b) — nothing leaves the PC
-  anthropic  Claude through the Anthropic API (brain_claude.py)       — API key in DPAPI secrets
+  ollama     a model on this PC (qwen3.5:4b) — nothing leaves the PC; optional, installed only when chosen
+  anthropic  Claude through the Anthropic API (brain_claude.py)       — API key in DPAPI secrets; the default brain
   openai     OpenAI chat models (brain_openai.py)                     — API key in DPAPI secrets
 Messages go in and come out in Ollama's shape ({"role", "content", "tool_calls", "images"}); each cloud adapter
-converts. A cloud failure (no internet, no credit, wrong key) answers with the local model instead and says why.
+converts. A cloud failure (no internet, no credit, wrong key) answers with the local model instead and says why;
+without Ollama it raises BrainUnavailable, whose text is what the owner sees.
 """
 import json, os, threading, time
 
@@ -23,11 +24,21 @@ _down = {}  # provider -> (until, reason)
 _models = {}  # provider -> (time, [ids])
 
 
+DEFAULT_PROVIDER = os.environ.get("FRIDAY_BRAIN", "anthropic")  # Claude edition: no local model is installed by default
+
+
+class BrainUnavailable(Exception):
+    """No brain can answer: the chosen cloud failed and there is no local model to stand in. str() is shown to the owner."""
+    def __init__(self, text, needs_key=False):
+        super().__init__(text)
+        self.needs_key = needs_key
+
+
 def current():
-    """(provider, model) from settings.json "brain" — default the local model."""
+    """(provider, model) from settings.json "brain" — default DEFAULT_PROVIDER with its default model."""
     b = rules.settings().get("brain") or {}
-    p = b.get("provider") if b.get("provider") in NAMES else "ollama"
-    return p, b.get("model") or (LOCAL if p == "ollama" else "")
+    p = b.get("provider") if b.get("provider") in NAMES else DEFAULT_PROVIDER
+    return p, b.get("model") or (LOCAL if p == "ollama" else DEFAULT.get(p, ""))
 
 
 def is_cloud():
@@ -39,7 +50,7 @@ def label(provider=None, model=None):
     return f"{'☁ ' if p != 'ollama' else ''}{NAMES[p]} · {m}"
 
 
-DEFAULT = {"anthropic": "claude-opus-5-5"}  # OpenAI: picked from its list (no safe default name)
+DEFAULT = {"anthropic": "claude-sonnet-5-5"}  # OpenAI: picked from its list (no safe default name)
 
 
 def set_brain(provider, model):
@@ -64,6 +75,24 @@ def model_for(provider):
 
 def key(provider):
     return security.secret(KEY[provider]) if provider in KEY else None
+
+
+def check_key(provider, value):
+    """Try a key before saving it: (True, model ids) or (False, a short Thai reason). Calls the provider's model list —
+    free, and it fails the same way a chat would on a wrong key, no credit or no internet."""
+    value = (value or "").strip()
+    if not value:
+        return False, "ยังไม่ได้ใส่ API key"
+    try:
+        if provider == "anthropic":
+            import brain_claude
+            ids = brain_claude.models(value)
+        else:
+            import brain_openai
+            ids = brain_openai.models(value)
+    except Exception as e:
+        return False, reason(e)
+    return (True, ids) if ids else (False, "key นี้ไม่มีรุ่นที่ใช้ได้")
 
 
 def set_key(provider, value):
@@ -172,7 +201,10 @@ def chat(messages, tools=None, schema=None, temperature=0.3, max_tokens=None, so
                 why = reason(e)
                 _down[provider] = (time.time() + COOLDOWN_S, why)
                 security.audit(source, "brain_cloud", f"{provider}:{model}", "error", why)
-        msg = _ollama(LOCAL, messages, tools, schema, temperature, max_tokens)
+        try:
+            msg = _ollama(LOCAL, messages, tools, schema, temperature, max_tokens)
+        except requests.ConnectionError:
+            raise BrainUnavailable(f"{NAMES[provider]} ใช้ไม่ได้ ({why})", needs_key=not key(provider)) from None
         msg["_fallback"] = f"{NAMES[provider]} ใช้ไม่ได้ ({why}) — ตอบด้วยสมองในเครื่องแทน"
         return msg
     try:
@@ -258,7 +290,21 @@ if __name__ == "__main__":  # selftest: conversion + routing without any key or 
     tmp = tempfile.mkdtemp()
     rules.SETTINGS, security.SECRETS, security.AUDIT = (os.path.join(tmp, "s.json"), os.path.join(tmp, "x.dat"),
                                                         os.path.join(tmp, "a.log"))
+    if os.name != "nt":  # dev on Linux: DPAPI exists only on Windows; the selftest checks routing, not encryption
+        security._dpapi = lambda data, protect: data
     rules.settings()
+    # Claude edition: a fresh install thinks with Claude; with no key and no Ollama it says so instead of crashing
+    assert current() == ("anthropic", DEFAULT["anthropic"]) and is_cloud(), current()
+    assert DEFAULT["anthropic"] == "claude-sonnet-5-5"
+    real_ollama, OLLAMA = OLLAMA, "http://127.0.0.1:9"  # nothing listens there
+    try:
+        chat([{"role": "user", "content": "hi"}])
+        raise AssertionError("no key, no Ollama: must raise BrainUnavailable")
+    except BrainUnavailable as e:
+        assert e.needs_key and "ยังไม่ได้ใส่ API key" in str(e) and "Ollama" not in str(e), str(e)
+    _down.clear()
+    OLLAMA = real_ollama
+    set_brain("ollama", LOCAL)
     assert current() == ("ollama", LOCAL) and not is_cloud()
     hist = [{"role": "system", "content": "You are FRIDAY"},
             {"role": "tool", "tool_name": "x", "content": "orphan from a cut window"},
@@ -289,8 +335,22 @@ if __name__ == "__main__":  # selftest: conversion + routing without any key or 
         m = chat([{"role": "user", "content": "reply with: ok"}], max_tokens=20)
         assert "ยังไม่ได้ใส่ API key" in m["_fallback"], m
         print("fallback:", m["_fallback"], "|", m.get("content", "")[:40])
-    except requests.ConnectionError:
+    except BrainUnavailable:
         print("(Ollama is not running: fallback path not exercised)")
+    # first-run key check: a key is tested with the provider's model list before it is ever saved
+    import brain_claude as _bc
+    real_models = _bc.models
+
+    class _Denied(Exception):
+        status_code = 401
+    _bc.models = lambda k: (_ for _ in ()).throw(_Denied("invalid x-api-key"))
+    assert check_key("anthropic", "sk-ant-bad") == (False, "API key ไม่ถูกต้องหรือไม่มีสิทธิ์")
+    _bc.models = lambda k: []
+    assert check_key("anthropic", "sk-ant-empty") == (False, "key นี้ไม่มีรุ่นที่ใช้ได้")
+    _bc.models = lambda k: ["claude-sonnet-5-5", "claude-haiku-5-5"]
+    assert check_key("anthropic", "sk-ant-good") == (True, ["claude-sonnet-5-5", "claude-haiku-5-5"])
+    assert check_key("anthropic", "  ") == (False, "ยังไม่ได้ใส่ API key")
+    _bc.models = real_models
     set_key("anthropic", "sk-ant-test")
     assert key("anthropic") == "sk-ant-test" and "sk-ant-test" not in open(rules.SETTINGS, encoding="utf-8").read()
     # §94 pull: only Ollama model names; progress in 10 % steps; size read back; an error from Ollama is passed on

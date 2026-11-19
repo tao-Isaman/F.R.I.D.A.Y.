@@ -1346,28 +1346,50 @@ def switch_brain(provider, model, source="typed"):
 _key_open = threading.Lock()
 
 
-def ask_api_key(provider):
+def ask_api_key(provider, welcome=False):
     if not _key_open.acquire(blocking=False):
         return  # one window at a time: two Tk interpreters on two threads is the §72 crash
     try:
-        on_tk_thread(lambda: _ask_api_key(provider))
+        on_tk_thread(lambda: _ask_api_key(provider, welcome))
     finally:
         _key_open.release()
 
 
-def _ask_api_key(provider):
-    """§84 a small window with a hidden field; saved encrypted (DPAPI) after Windows Hello. Never shown, logged or
-    written to settings.json."""
-    k = _ask_line(f"🔑 API key ของ {brain.NAMES[provider]}", "เก็บแบบเข้ารหัสในเครื่องนี้ (DPAPI) · ยืนยันด้วย Windows Hello", hide=True)
-    if not k:
-        return
-    if not confirm(f"บันทึก API key ของ {brain.NAMES[provider]}?", "", strong=True):
+KEY_TRIES = 3
+
+
+def _ask_api_key(provider, welcome=False):
+    """§84 a small window with a hidden field; the key is tried (the provider's model list) before it is kept, then
+    saved encrypted (DPAPI) after Windows Hello. Never shown, logged or written to settings.json. welcome=True is the
+    first-run wizard of the Claude edition: the brain is already the cloud one, it only needs its key."""
+    name = brain.NAMES[provider]
+    title = f"👋 ยินดีต้อนรับสู่ FRIDAY — วาง API key ของ {name}" if welcome else f"🔑 API key ของ {name}"
+    note = ("สร้าง key ได้ที่ console.anthropic.com › API keys · " if welcome and provider == "anthropic" else "") + \
+        "เก็บแบบเข้ารหัสในเครื่องนี้ (DPAPI) · ยืนยันด้วย Windows Hello"
+    for _ in range(KEY_TRIES):
+        k = _ask_line(title, note, hide=True)
+        if not k:
+            return
+        ok, got = brain.check_key(provider, k)
+        if ok:
+            break
+        note = f"⚠ ใช้ key นี้ไม่ได้: {got} — ลองวางใหม่อีกครั้ง"
+    else:
+        return phone_alert(f"ยังไม่ได้บันทึก API key ของ {name} ({got}) — ใส่ใหม่ได้ที่ tray › สมอง")
+    if not confirm(f"บันทึก API key ของ {name}?", "", strong=True):
         return phone_alert("ไม่ได้บันทึก API key")
     brain.set_key(provider, k)
     security.audit("tray", "api_key", provider, "done")  # never the key itself
-    ids = brain.models(provider, refresh=True)
-    phone_alert(f"บันทึก API key ของ {brain.NAMES[provider]} แล้ว · {len(ids)} รุ่นให้เลือกที่ tray › สมอง" if ids else
-                f"บันทึกแล้ว แต่ดึงรายชื่อรุ่นจาก {brain.NAMES[provider]} ไม่ได้ — key ถูกไหม / เน็ตต่ออยู่ไหม")
+    brain.models(provider, refresh=True)
+    phone_alert(f"พร้อมแล้วค่ะ ✅ FRIDAY คิดด้วย {brain.label()} — พิมพ์คุยได้เลย" if welcome else
+                f"บันทึก API key ของ {name} แล้ว · {len(got)} รุ่นให้เลือกที่ tray › สมอง")
+
+
+def first_run_key():
+    """Claude edition: the default brain is a cloud one, so the first thing a new install needs is its key."""
+    p = brain.current()[0]
+    if p in brain.KEY and not brain.key(p):
+        ask_api_key(p, welcome=True)
 
 
 def _ask_line(title, note, hide=False):
@@ -4359,6 +4381,12 @@ def _turn(history, text):
     except Stopped:
         del history[n:]
         panel.send(msg={"role": "tool", "text": "⏹ หยุดแล้ว"})
+    except brain.BrainUnavailable as e:  # Claude edition: no local model to stand in — tell the owner what to fix
+        del history[n:]
+        print(f"  {e}")
+        panel.send(msg={"role": "tool", "text": f"☁ {e}" + (" — คลิกขวาไอคอน › สมอง › ใส่ API key" if e.needs_key else "")})
+        if e.needs_key and TRAY:
+            threading.Thread(target=first_run_key, daemon=True).start()
     except requests.RequestException as e:
         print(f"  ติดต่อ Ollama ไม่ได้: {e}  (เปิดแอป Ollama แล้วลองใหม่)")
         del history[n:]
@@ -4731,6 +4759,10 @@ def main():
     except Exception as e:
         print(f"  (ตรวจความปลอดภัยไม่ได้: {e})")
     panel = Panel()
+    if TRAY:
+        threading.Thread(target=first_run_key, daemon=True).start()  # Claude edition: ask for the key on first run
+    elif brain.current()[0] in brain.KEY and not brain.key(brain.current()[0]):
+        print(f"  🔑 ยังไม่มี API key ของ {brain.NAMES[brain.current()[0]]} — เปิดแบบ tray แล้วใส่ key ในหน้าต่างที่ขึ้นมา")
     threading.Thread(target=reminder_loop, daemon=True).start()  # §50
     if TRAY and rules.settings().get("peer"):  # §113 friends' FRIDAYs, if the owner turned it on
         try:
