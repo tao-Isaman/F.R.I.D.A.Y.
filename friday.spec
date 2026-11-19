@@ -31,7 +31,7 @@ datas += collect_data_files("fastembed")  # collect_all imports fastembed.text, 
 site = os.path.join(".venv", "Lib", "site-packages")
 # cuBLAS / cuDNN are not bundled (~1.9 GB): the GPU pack brings them on first use (app/packs.py)
 # modules friday.py imports by name at run time
-hidden += ["packs", "ui", "tts_th", "memory", "rules", "docsearch", "wakeword", "sessions", "skills", "documents", "hardware",
+hidden += ["packs", "sttbench", "ui", "tts_th", "memory", "rules", "docsearch", "wakeword", "sessions", "skills", "documents", "hardware",
            "security", "workspace", "weather", "reminders", "media", "tasks", "windows", "journal", "voiceid",
            "remote", "brain", "brain_claude", "brain_openai", "computer", "project", "categories", "video"]
 
