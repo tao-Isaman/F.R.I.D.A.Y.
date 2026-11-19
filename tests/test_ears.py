@@ -17,13 +17,41 @@ class Downloads:
         return f"/cache/{name}"
 
 
-def _setup(fr, monkeypatch, cached=(), answer=True):
+class Packs:
+    """Fake packs module state: which packs are on the PC, what got fetched."""
+    def __init__(self, have=(), nvidia=False, fail=()):
+        self.have, self.nvidia, self.fail, self.fetched = set(have), nvidia, set(fail), []
+
+    def installed(self, name):
+        return name in self.have
+
+    def fetch(self, name, progress=lambda d, t: None):
+        if name in self.fail:
+            import packs
+            raise packs.PackError("no internet")
+        progress(50, 100)
+        progress(100, 100)
+        self.fetched.append(name)
+        self.have.add(name)
+
+    def has_nvidia(self):
+        return self.nvidia
+
+
+def _setup(fr, monkeypatch, cached=(), answer=True, have=("voice",), nvidia=False, answers=None):
     d = Downloads(cached)
+    p = Packs(have, nvidia)
     monkeypatch.setattr(fr, "_download_model", d)
-    monkeypatch.setattr(fr, "confirm", lambda q, detail="", strong=False: (fr.ui.confirms.append(q), answer)[1])
+    monkeypatch.setattr(fr.packs, "installed", p.installed)
+    monkeypatch.setattr(fr.packs, "fetch", p.fetch)
+    monkeypatch.setattr(fr.packs, "has_nvidia", p.has_nvidia)
+    replies = list(answers) if answers is not None else None
+    monkeypatch.setattr(fr, "confirm", lambda q, detail="", strong=False: (
+        fr.ui.confirms.append(q), replies.pop(0) if replies is not None else answer)[1])
     monkeypatch.setattr(fr, "EARS", {})
     started = []
     monkeypatch.setattr(fr, "_background", lambda fn: (started.append(fn), fn()))
+    fr.ui.packs = p
     return d, started
 
 
@@ -66,3 +94,64 @@ def test_live_captions_never_ask(fr, monkeypatch):
     d, started = _setup(fr, monkeypatch)
     assert fr._transcribe(object(), quiet=True) == ""
     assert not fr.ui.confirms and not started
+
+
+def test_voice_pack_comes_with_the_first_download(fr, monkeypatch):
+    d, started = _setup(fr, monkeypatch, have=())
+    assert fr.ensure_ears() is False
+    assert fr.ui.packs.fetched == ["voice"] and "MB" in fr.ui.confirms[0]
+    assert fr.ensure_ears() is True
+
+
+def test_ready_needs_the_voice_pack_too(fr, monkeypatch):
+    d, started = _setup(fr, monkeypatch, cached=fr.BIG_EARS, have=())
+    assert fr.ensure_ears() is False and fr.ui.packs.fetched == ["voice"] and not d.fetched
+
+
+def test_gpu_pack_is_offered_only_with_an_nvidia_card(fr, monkeypatch):
+    _setup(fr, monkeypatch, nvidia=True, answers=[True, True])
+    fr.ensure_ears()
+    assert fr.ui.packs.fetched == ["gpu"] and len(fr.ui.confirms) == 2 and "NVIDIA" in fr.ui.confirms[1]
+    told = [m["msg"]["text"] for m in fr.ui.panel if "msg" in m]
+    assert any("เปิด FRIDAY ใหม่" in t for t in told), told
+
+
+def test_gpu_pack_declined_keeps_the_cpu(fr, monkeypatch):
+    _setup(fr, monkeypatch, nvidia=True, answers=[True, False])
+    fr.ensure_ears()
+    assert "gpu" not in fr.ui.packs.fetched and len(fr.ui.confirms) == 2
+
+
+def test_no_gpu_question_without_nvidia(fr, monkeypatch):
+    _setup(fr, monkeypatch, nvidia=False)
+    fr.ensure_ears()
+    assert len(fr.ui.confirms) == 1
+
+
+def test_thai_speech_uses_the_windows_voice_until_the_pack_is_in(fr, monkeypatch):
+    _setup(fr, monkeypatch, have=())
+    used = []
+    monkeypatch.setattr(fr.tts_th, "synth_mixed", lambda *a, **k: used.append("neural") or b"")
+    monkeypatch.setattr(fr, "_synth", lambda text: used.append("windows") or _done(b""))
+    fr.tts_wav("สวัสดีค่ะ")
+    assert used == ["windows"]
+
+
+def test_enrolling_a_voice_needs_the_pack(fr, monkeypatch):
+    _setup(fr, monkeypatch, have=())
+    monkeypatch.setattr(fr.remote, "current", lambda: None)
+    assert "ชุดเสียง" in fr.enroll_voice()
+
+
+def test_whisper_runs_on_the_gpu_only_with_the_gpu_pack(fr, monkeypatch):
+    _setup(fr, monkeypatch, have=())
+    monkeypatch.delenv("FRIDAY_WHISPER_DEVICE", raising=False)
+    assert fr.whisper_device() == "cpu"
+    fr.ui.packs.have.add("gpu")
+    assert fr.whisper_device() == "cuda"
+    monkeypatch.setenv("FRIDAY_WHISPER_DEVICE", "cpu")
+    assert fr.whisper_device() == "cpu"
+
+
+async def _done(v):
+    return v

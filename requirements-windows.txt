@@ -42,7 +42,5 @@ winrt-Windows.Media.Control
 winrt-Windows.Media.SpeechSynthesis
 winrt-Windows.Security.Credentials.UI
 winrt-Windows.Storage.Streams
-# cuBLAS / cuDNN for Whisper on an NVIDIA GPU (friday.spec copies their DLLs)
-nvidia-cublas-cu12
-nvidia-cudnn-cu12>=9,<10
+# cuBLAS / cuDNN are NOT bundled: the GPU pack fetches NVIDIA's wheels from PyPI on the owner's PC (app/packs.py)
 pyinstaller

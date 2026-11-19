@@ -48,6 +48,11 @@ for _d in glob.glob(os.path.join(getattr(sys, "_MEIPASS", ""), "nvidia", "*", "b
     os.add_dll_directory(_d)
     os.environ["PATH"] = _d + os.pathsep + os.environ["PATH"]
 
+import packs  # Claude edition: the GPU DLLs and voice models come on first use, not in the installer
+for _d in packs.dll_dirs():  # cuBLAS/cuDNN from the GPU pack: on the search path before ctranslate2 loads them
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(_d)
+    os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 import numpy as np, psutil, requests, sounddevice as sd
 from faster_whisper import WhisperModel  # must load (ctranslate2 DLLs) before winrt, or model init access-violates
 import memory, rules, docsearch, tts_th, wakeword  # onnxruntime users: also after faster_whisper
@@ -58,7 +63,12 @@ __version__ = "0.54.0"  # bump with PLAN.md (rule 6: TasksSummary ranges follow 
 OLLAMA = os.environ.get("FRIDAY_OLLAMA", "http://127.0.0.1:11434")
 MODEL = os.environ.get("FRIDAY_MODEL", "qwen3.5:4b")  # beat qwen3:8b 39/42 vs 33/42 with 1.7 GB less VRAM (PLAN §7)
 WHISPER = os.environ.get("FRIDAY_WHISPER", "large-v3-turbo")
-WHISPER_DEVICE = os.environ.get("FRIDAY_WHISPER_DEVICE", "cuda")  # "cpu" frees ~1 GB VRAM, slower
+def whisper_device():
+    """FRIDAY_WHISPER_DEVICE wins; else the GPU when the GPU pack (cuBLAS/cuDNN) is on this PC, else the CPU."""
+    return os.environ.get("FRIDAY_WHISPER_DEVICE") or ("cuda" if packs.installed("gpu") else "cpu")
+
+
+WHISPER_DEVICE = whisper_device()  # "cpu" frees ~1 GB VRAM, slower
 LANG = os.environ.get("FRIDAY_LANG") or None  # "th" / "en" to force; None = auto-detect
 # Thai speech model (Thonburian Whisper medium, CTranslate2); "" = use WHISPER for Thai too
 WHISPER_TH = os.environ.get("FRIDAY_WHISPER_TH", "Vinxscribe/biodatlab-whisper-th-medium-faster")
@@ -1644,6 +1654,8 @@ def enroll_voice():
     """§59: the owner reads 5 short lines; their voice print (numbers only, encrypted) is saved. No audio is kept."""
     if remote.current() is not None:
         return "ลงทะเบียนเสียงต้องพูดที่ไมค์ของเครื่องค่ะ — ทำจากมือถือไม่ได้"
+    if not packs.installed("voice"):
+        return "ต้องโหลดชุดเสียงก่อนค่ะ — พูดกับ FRIDAY สักครั้งแล้วตอบตกลงให้โหลด จากนั้นค่อยลงทะเบียนเสียง"
     clips = []
     for i, line in enumerate(ENROLL_LINES, 1):
         prompt = f"ประโยคที่ {i}/{len(ENROLL_LINES)} พูดว่า: \"{line}\""
@@ -2748,6 +2760,8 @@ def tts_wav(text):
     global _release_timer
     thai = re.search(r"[฀-๿]", text)
     engine, _, voice = TH_VOICE.partition(":")
+    if engine in ("vanira", "vachana") and not packs.installed("voice"):
+        engine = "pattara"  # Claude edition: the Windows voice until the voice pack is on this PC (ensure_ears)
     if engine in ("vanira", "vachana") or thai and engine == "piper" and not re.search(r"[A-Za-z]", text):
         try:
             if engine == "piper":
@@ -3303,37 +3317,66 @@ def _background(fn):
     threading.Thread(target=fn, daemon=True).start()
 
 
-def ensure_ears(ask=True):
-    """True when the speech models are on this PC. Otherwise ask once (typing keeps working), fetch them in the
-    background and say in the panel when listening is ready; this utterance is skipped (False). ask=False (live
-    captions while recording) only checks."""
+def _ears_cached():
     try:
         for m in BIG_EARS:
             _download_model(m, local_files_only=True)
         return True
     except Exception:
-        pass
+        return False
+
+
+def _progress(label):
+    """A packs.fetch progress callback that tells the panel every 10 %."""
+    last = [-1]
+
+    def tell(done, total):
+        pct = int(done * 100 / total) if total else 100
+        if pct // 10 != last[0] // 10:
+            last[0] = pct
+            panel.send(msg={"role": "tool", "text": f"⬇ {label} {pct}%"})
+    return tell
+
+
+def ensure_ears(ask=True):
+    """True when listening and speaking are ready on this PC: the Whisper models (~3 GB, fetched by faster-whisper) and
+    the voice pack (Thai/English voices + owner's-voice model, packs.py). Otherwise ask once (typing keeps working),
+    fetch in the background and say in the panel when ready; this utterance is skipped (False). With an NVIDIA card
+    the GPU pack is offered too (a second question). ask=False (live captions while recording) only checks."""
+    whisper_ok, voice_ok = _ears_cached(), packs.installed("voice")
+    if whisper_ok and voice_ok:
+        return True
     if not ask:
         return False
     if EARS.get("busy") or EARS.get("asked"):
         if EARS.get("busy"):
-            panel.send(msg={"role": "tool", "text": "⬇ ยังโหลดโมเดลฟังเสียงอยู่ — ระหว่างนี้พิมพ์คุยได้ค่ะ"})
+            panel.send(msg={"role": "tool", "text": "⬇ ยังโหลดชุดเสียงอยู่ — ระหว่างนี้พิมพ์คุยได้ค่ะ"})
         return False
     EARS["asked"] = True
-    if not confirm("ดาวน์โหลดโมเดลฟังเสียง (~3 GB) ตอนนี้ไหมคะ? ระหว่างโหลดพิมพ์คุยได้ตามปกติ", ""):
-        panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดโมเดลฟังเสียง — พิมพ์คุยได้ตามปกติ ลองพูดใหม่เมื่อไหร่ก็ได้หลังเปิด FRIDAY ใหม่"})
+    need = ([] if whisper_ok else ["โมเดลฟังเสียง ~3 GB"]) + ([] if voice_ok else [f"เสียงพูด ~{packs.size_mb('voice')} MB"])
+    if not confirm(f"ดาวน์โหลด{' + '.join(need)} ตอนนี้ไหมคะ? ระหว่างโหลดพิมพ์คุยได้ตามปกติ", ""):
+        panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดชุดเสียง — พิมพ์คุยได้ตามปกติ ลองพูดใหม่เมื่อไหร่ก็ได้หลังเปิด FRIDAY ใหม่"})
         return False
+    gpu = packs.has_nvidia() and not packs.installed("gpu") and confirm(
+        f"พบการ์ดจอ NVIDIA — โหลด GPU pack (~{packs.size_mb('gpu')} MB จาก PyPI ของ NVIDIA) ให้ฟังเสียงเร็วขึ้นไหมคะ? "
+        "ไม่โหลดก็ใช้ได้ แต่ช้ากว่า", "")
     EARS["busy"] = True
 
     def fetch():
         try:
-            for i, m in enumerate(BIG_EARS, 1):
-                panel.send(msg={"role": "tool", "text": f"⬇ โหลดโมเดลฟังเสียง {i}/{len(BIG_EARS)}: {m}"})
-                _download_model(m)
+            if not whisper_ok:
+                for i, m in enumerate(BIG_EARS, 1):
+                    panel.send(msg={"role": "tool", "text": f"⬇ โหลดโมเดลฟังเสียง {i}/{len(BIG_EARS)}: {m}"})
+                    _download_model(m)
+            if not voice_ok:
+                packs.fetch("voice", progress=_progress("โหลดเสียงพูด"))
             panel.send(msg={"role": "tool", "text": "✅ พร้อมฟังเสียงแล้วค่ะ — พูดได้เลย"})
+            if gpu:
+                packs.fetch("gpu", progress=_progress("โหลด GPU pack"))
+                panel.send(msg={"role": "tool", "text": "✅ โหลด GPU pack แล้ว — เปิด FRIDAY ใหม่เพื่อให้ฟังเสียงด้วยการ์ดจอ"})
         except Exception as e:
             EARS.pop("asked", None)  # a failed download may be tried again on the next utterance
-            panel.send(msg={"role": "tool", "text": f"โหลดโมเดลฟังเสียงไม่สำเร็จ ({type(e).__name__}) — ตรวจเน็ตแล้วลองพูดใหม่"})
+            panel.send(msg={"role": "tool", "text": f"โหลดชุดเสียงไม่สำเร็จ ({type(e).__name__}: {str(e)[:80]}) — ตรวจเน็ตแล้วลองพูดใหม่"})
         finally:
             EARS.pop("busy", None)
     _background(fetch)
@@ -4781,6 +4824,12 @@ def prefetch():
     except Exception as e:
         ok = False
         print(f"  ✗ MiniLM: {e}")
+    try:  # Claude edition: the voices and owner's-voice model are not in the installer either
+        print(f"  ⬇ voice pack (~{packs.size_mb('voice')} MB)")
+        packs.fetch("voice")
+    except Exception as e:
+        ok = False
+        print(f"  ✗ voice pack: {e}")
     print("PREFETCH OK" if ok else "PREFETCH INCOMPLETE")
     sys.exit(0 if ok else 1)
 
@@ -4828,7 +4877,7 @@ def main():
             print(f"  (เปิดรับคำสั่งจากมือถือไม่ได้: {e})")
     if TRAY:
         threading.Thread(target=greet_loop, daemon=True).start()  # §60 (the console is a dev tool: no greeting)
-    if TH_VOICE != "pattara":  # warm the Thai voice in the background so the first Thai reply doesn't stall
+    if TH_VOICE != "pattara" and packs.installed("voice"):  # warm the Thai voice in the background so the first Thai reply doesn't stall
         threading.Thread(target=lambda: tts_wav("ค่ะ OK"), daemon=True).start()  # warms the Thai and the English worker
     if TRAY:
         return run_tray(history)

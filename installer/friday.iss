@@ -61,8 +61,8 @@ english.GetCua=Installing cua-driver…
 english.NetFail=Some downloads failed (%1) — check the internet and run setup again; FRIDAY also downloads on first use.
 thai.LocalBrainTask=ติดตั้งสมองในเครื่องด้วย (Ollama + qwen3.5:4b ~3.4 GB · ต้องมีการ์ดจอ) — ไม่ติ๊กก็ใช้ Claude ได้
 english.LocalBrainTask=Also install a local brain (Ollama + qwen3.5:4b, ~3.4 GB, needs a GPU) — not needed for Claude
-thai.VoiceModelsTask=โหลดโมเดลฟังเสียงตอนนี้เลย (~3 GB) — ไม่ติ๊ก = FRIDAY ถามแล้วโหลดตอนพูดครั้งแรก
-english.VoiceModelsTask=Download the speech-recognition models now (~3 GB) — else FRIDAY asks the first time you speak
+thai.VoiceModelsTask=โหลดชุดเสียงตอนนี้เลย (ฟังเสียง ~3 GB + เสียงพูด ~270 MB) — ไม่ติ๊ก = FRIDAY ถามแล้วโหลดตอนพูดครั้งแรก
+english.VoiceModelsTask=Download the voice pack now (speech recognition ~3 GB + voices ~270 MB) — else FRIDAY asks the first time you speak
 
 [Tasks]
 Name: "startup"; Description: "{cm:Startup}"
@@ -78,9 +78,8 @@ Source: "..\dist\FRIDAY-voice\*"; DestDir: "{app}\voice"; Flags: recursesubdirs 
 Source: "..\skills\*"; DestDir: "{app}\skills"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist
 Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "stage\config\settings.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist uninsneveruninstall
-Source: "..\models\vanira\*"; DestDir: "{app}\models\vanira"; Flags: ignoreversion
-Source: "..\models\speaker\*"; DestDir: "{app}\models\speaker"; Flags: ignoreversion
-Source: "..\models\piper\en_US-hfc_female-medium.onnx*"; DestDir: "{app}\models\piper"; Flags: ignoreversion
+;  Claude edition: no models and no CUDA DLLs in here — FRIDAY fetches them from their own sources on first voice
+;  use (app\packs.py: voices + owner's-voice model; GPU pack = NVIDIA's cuBLAS/cuDNN wheels from PyPI)
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "cua\*"; DestDir: "{tmp}\cua"; Flags: deleteafterinstall; Tasks: cuadriver
 

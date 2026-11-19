@@ -69,21 +69,6 @@ jobs:
           .venv-tts\Scripts\python -m pip install --upgrade pip
           .venv-tts\Scripts\pip install piper-tts onnxruntime "numpy<2" pyinstaller
           .venv-tts\Scripts\pip freeze > pip-freeze-voice.txt
-      - name: models shipped in the installer
-        shell: pwsh
-        run: |
-          $get = @(
-            @("models/vanira/tts.onnx",   "https://huggingface.co/VIZINTZOR/VaniraTTS/resolve/main/tts.onnx"),
-            @("models/vanira/vocab.json", "https://huggingface.co/VIZINTZOR/VaniraTTS/resolve/main/vocab.json"),
-            @("models/piper/en_US-hfc_female-medium.onnx",      "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx"),
-            @("models/piper/en_US-hfc_female-medium.onnx.json", "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json"),
-            @("models/speaker/wespeaker_en_voxceleb_resnet34.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx")
-          )
-          foreach ($g in $get) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $g[0]) | Out-Null
-            Invoke-WebRequest -Uri $g[1] -OutFile $g[0]
-            "{0}  {1}" -f (Get-FileHash $g[0] -Algorithm SHA256).Hash, $g[0] | Tee-Object -Append models-sha256.txt
-          }
       - name: PyInstaller
         run: |
           $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
@@ -92,7 +77,7 @@ jobs:
       - name: size report (what the installer carries)
         shell: pwsh
         run: |
-          $rows = foreach ($root in @("dist/FRIDAY/_internal", "dist/FRIDAY-voice/_internal", "models")) {
+          $rows = foreach ($root in @("dist/FRIDAY/_internal", "dist/FRIDAY-voice/_internal")) {
             Get-ChildItem $root -Force | ForEach-Object {
               $bytes = if ($_.PSIsContainer) { (Get-ChildItem $_.FullName -Recurse -File -Force | Measure-Object Length -Sum).Sum } else { $_.Length }
               [pscustomobject]@{ MB = [math]::Round($bytes / 1MB, 1); Path = "$root/$($_.Name)" }
@@ -124,6 +109,5 @@ jobs:
           path: |
             D:/friday/dist/installer/*
             D:/friday/pip-freeze-*.txt
-            D:/friday/models-sha256.txt
           retention-days: 14
           if-no-files-found: error

@@ -29,10 +29,9 @@ for pkg in ("ctranslate2", "faster_whisper", "onnxruntime", "sherpa_onnx", "open
     hidden += h
 datas += collect_data_files("fastembed")  # collect_all imports fastembed.text, which crashes the analysis
 site = os.path.join(".venv", "Lib", "site-packages")
-for dll in glob.glob(os.path.join(site, "nvidia", "*", "bin", "*.dll")):  # cuBLAS / cuDNN for Whisper on the GPU
-    binaries.append((dll, os.path.relpath(os.path.dirname(dll), site)))
+# cuBLAS / cuDNN are not bundled (~1.9 GB): the GPU pack brings them on first use (app/packs.py)
 # modules friday.py imports by name at run time
-hidden += ["ui", "tts_th", "memory", "rules", "docsearch", "wakeword", "sessions", "skills", "documents", "hardware",
+hidden += ["packs", "ui", "tts_th", "memory", "rules", "docsearch", "wakeword", "sessions", "skills", "documents", "hardware",
            "security", "workspace", "weather", "reminders", "media", "tasks", "windows", "journal", "voiceid",
            "remote", "brain", "brain_claude", "brain_openai", "computer", "project", "categories", "video"]
 

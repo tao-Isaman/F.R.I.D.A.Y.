@@ -13,8 +13,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "app"))
 import rules  # noqa: E402  (DEFAULT_SETTINGS only)
 
-for need in ("dist/FRIDAY/FRIDAY.exe", "dist/FRIDAY-voice/FRIDAY-voice.exe", "models/vanira/tts.onnx",
-             "models/piper/en_US-hfc_female-medium.onnx", "models/speaker/wespeaker_en_voxceleb_resnet34.onnx"):
+for need in ("dist/FRIDAY/FRIDAY.exe", "dist/FRIDAY-voice/FRIDAY-voice.exe"):  # models: fetched on first use (packs.py)
     if not os.path.isfile(os.path.join(ROOT, need)):
         sys.exit(f"missing {need} — build/download it first (see the docstring)")
 
