@@ -1,0 +1,23 @@
+# Linux/CI logic tests (tests/): the portable part of requirements-windows.txt
+anthropic>=2.10
+requests
+numpy
+psutil
+pillow
+cryptography
+segno
+pypdf
+python-docx
+python-pptx
+openpyxl
+huggingface_hub
+onnxruntime
+fastembed
+faster-whisper
+sherpa-onnx
+pythainlp
+openwakeword
+pystray
+pywebview
+pyserial
+pytest

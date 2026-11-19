@@ -1,0 +1,97 @@
+# Claude edition build: tests on Linux, then FRIDAY.exe + FRIDAY-voice.exe (PyInstaller) and the Inno Setup installer
+# on a Windows runner. Output = a workflow artifact only (no release). No secrets: the API key is entered by the owner
+# in FRIDAY's first-run window. Models are fetched from their public sources at build time.
+name: build-windows
+
+on:
+  push:
+    branches: [feat/claude-edition]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+      - run: pip install -r requirements-test.txt
+      - name: pytest
+        run: python -m pytest -q tests
+      - name: module selftests (portable ones)
+        run: |
+          for m in brain rules categories sessions tasks reminders journal memory workspace documents computer; do
+            PYTHONPATH=app python app/$m.py | tail -1
+          done
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: venv for FRIDAY.exe
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\pip install -r requirements-windows.txt
+          .venv\Scripts\pip freeze > pip-freeze-friday.txt
+      - name: venv for FRIDAY-voice.exe (Piper)
+        run: |
+          python -m venv .venv-tts
+          .venv-tts\Scripts\python -m pip install --upgrade pip
+          .venv-tts\Scripts\pip install piper-tts onnxruntime "numpy<2" pyinstaller
+          .venv-tts\Scripts\pip freeze > pip-freeze-voice.txt
+      - name: models shipped in the installer
+        shell: pwsh
+        run: |
+          $get = @(
+            @("models/vanira/tts.onnx",   "https://huggingface.co/VIZINTZOR/VaniraTTS/resolve/main/tts.onnx"),
+            @("models/vanira/vocab.json", "https://huggingface.co/VIZINTZOR/VaniraTTS/resolve/main/vocab.json"),
+            @("models/piper/en_US-hfc_female-medium.onnx",      "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx"),
+            @("models/piper/en_US-hfc_female-medium.onnx.json", "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json"),
+            @("models/speaker/wespeaker_en_voxceleb_resnet34.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx")
+          )
+          foreach ($g in $get) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $g[0]) | Out-Null
+            Invoke-WebRequest -Uri $g[1] -OutFile $g[0]
+            "{0}  {1}" -f (Get-FileHash $g[0] -Algorithm SHA256).Hash, $g[0] | Tee-Object -Append models-sha256.txt
+          }
+      - name: PyInstaller
+        run: |
+          .venv\Scripts\pyinstaller friday.spec --noconfirm
+          .venv-tts\Scripts\pyinstaller voice.spec --noconfirm
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $thai = "${env:ProgramFiles(x86)}\Inno Setup 6\Languages\Thai.isl"
+          if (-not (Test-Path $thai)) {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Thai.isl" -OutFile $thai
+          }
+          $env:ISCC = $iscc
+          .venv\Scripts\python installer\build.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FRIDAY-claude-edition-${{ github.sha }}
+          path: |
+            dist/installer/*
+            pip-freeze-*.txt
+            models-sha256.txt
+          retention-days: 14
+          if-no-files-found: error
