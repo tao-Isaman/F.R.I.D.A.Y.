@@ -74,7 +74,8 @@ Name: "voicemodels"; Description: "{cm:VoiceModelsTask}"; Flags: unchecked
 [Files]
 Source: "..\dist\FRIDAY\*"; DestDir: "{app}\FRIDAY"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\dist\FRIDAY-voice\*"; DestDir: "{app}\voice"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "..\skills\*"; DestDir: "{app}\skills"; Flags: recursesubdirs createallsubdirs ignoreversion
+; skills/ is gitignored (the owner's own skills): a CI build ships none
+Source: "..\skills\*"; DestDir: "{app}\skills"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist
 Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "stage\config\settings.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "..\models\vanira\*"; DestDir: "{app}\models\vanira"; Flags: ignoreversion
