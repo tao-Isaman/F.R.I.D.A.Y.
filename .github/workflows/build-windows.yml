@@ -89,6 +89,23 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
           .venv\Scripts\pyinstaller friday.spec --noconfirm
           .venv-tts\Scripts\pyinstaller voice.spec --noconfirm
+      - name: size report (what the installer carries)
+        shell: pwsh
+        run: |
+          $rows = foreach ($root in @("dist/FRIDAY/_internal", "dist/FRIDAY-voice/_internal", "models")) {
+            Get-ChildItem $root -Force | ForEach-Object {
+              $bytes = if ($_.PSIsContainer) { (Get-ChildItem $_.FullName -Recurse -File -Force | Measure-Object Length -Sum).Sum } else { $_.Length }
+              [pscustomobject]@{ MB = [math]::Round($bytes / 1MB, 1); Path = "$root/$($_.Name)" }
+            }
+          }
+          $rows | Sort-Object MB -Descending | Select-Object -First 60 | Format-Table -AutoSize | Out-String -Width 200 | Tee-Object size-report.txt
+          "TOTAL dist/FRIDAY MB: {0:N1}" -f ((Get-ChildItem dist/FRIDAY -Recurse -File | Measure-Object Length -Sum).Sum / 1MB) | Tee-Object -Append size-report.txt
+          "TOTAL dist/FRIDAY-voice MB: {0:N1}" -f ((Get-ChildItem dist/FRIDAY-voice -Recurse -File | Measure-Object Length -Sum).Sum / 1MB) | Tee-Object -Append size-report.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ github.sha }}
+          path: D:/friday/size-report.txt
+          retention-days: 14
       - name: Inno Setup
         shell: pwsh
         run: |
