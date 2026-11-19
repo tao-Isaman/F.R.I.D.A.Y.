@@ -196,3 +196,23 @@ def test_menu_when_complete_offers_the_gpu_pack(fr, monkeypatch):
     _setup(fr, monkeypatch, cached=fr.BIG_EARS, have=("voice",), nvidia=True, answer=True)
     fr.offer_voice(manual=True)
     assert fr.ui.packs.fetched == ["gpu"] and "GPU" in fr.ui.confirms[0]
+
+
+class _Model:
+    def __init__(self, name, en_prob=0.0):
+        self.name, self.en_prob, self.calls = name, en_prob, []
+
+    def detect_language(self, audio):
+        return None, None, [("en", self.en_prob), ("th", 1 - self.en_prob)]
+
+    def transcribe(self, audio, **kw):
+        self.calls.append(kw["language"])
+        return [type("S", (), {"text": f" {self.name}"})()], None
+
+
+def test_run_stt_routes_by_detected_language(fr):
+    th, en = _Model("th-model"), _Model("en-model")
+    assert fr._run_stt(_Model("det", en_prob=0.95), lambda: th, en, b"") == ("en", "en-model")
+    assert fr._run_stt(_Model("det", en_prob=0.30), lambda: th, en, b"") == ("th", "th-model")
+    assert fr._run_stt(_Model("det", en_prob=0.30), lambda: None, en, b"") == ("th", "en-model")  # no Thai model
+    assert fr._run_stt(_Model("det"), lambda: th, en, b"", lang="en") == ("en", "en-model")  # FRIDAY_LANG forced

@@ -5,7 +5,7 @@ name: build-windows
 
 on:
   push:
-    branches: [feat/claude-edition]
+    branches: [feat/claude-edition, exp/cpu-stt]
   workflow_dispatch:
 
 permissions:
@@ -126,6 +126,17 @@ jobs:
           $env:ISCC = $iscc
           .venv\Scripts\python installer\build.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: option 1 experiment — convert the small Thai models to CTranslate2 (exp/cpu-stt only)
+        if: github.ref == 'refs/heads/exp/cpu-stt'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv D:\ct2conv
+          D:\ct2conv\Scripts\python -m pip install --upgrade pip
+          D:\ct2conv\Scripts\pip install ctranslate2 transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
+          # pinned to the commits checked on 2026-11-19 (biodatlab, Apache-2.0 / MIT)
+          D:\ct2conv\Scripts\ct2-transformers-converter --model biodatlab/whisper-th-small-combined --revision 956bcd8fbcb69c053b3116e2f21c636db5510a79 --output_dir D:\stt-bench\th-small --quantization int8 --copy_files tokenizer.json preprocessor_config.json
+          D:\ct2conv\Scripts\ct2-transformers-converter --model biodatlab/distill-whisper-th-small --revision 14d3037426d67d69029a06b4597cd939118523f6 --output_dir D:\stt-bench\distill-th-small --quantization int8 --copy_files tokenizer.json preprocessor_config.json
+          Get-ChildItem D:\stt-bench -Recurse | Format-Table FullName, Length
       - name: install it silently and run the voice smoke test on the installed copy
         shell: pwsh
         run: |
@@ -134,6 +145,7 @@ jobs:
           $setup = Get-ChildItem dist\installer\FRIDAY-Setup-*.exe | Select-Object -First 1
           $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=D:\fridaytest", "/TASKS=", "/LOG=D:\friday\install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "silent install failed ($($p.ExitCode))"; exit 1 }
+          if (Test-Path D:\stt-bench) { $env:FRIDAY_STT_BENCH = "D:\stt-bench" }
           $p = Start-Process D:\fridaytest\FRIDAY\FRIDAY.exe -ArgumentList "--voice-smoke", "D:\friday\voice-smoke.txt" -Wait -PassThru
           Get-Content voice-smoke.txt
           if (Test-Path D:\fridaytest\data\logs\tts-worker.log) { "--- tts-worker.log"; Get-Content D:\fridaytest\data\logs\tts-worker.log -Tail 60 }

@@ -9,7 +9,7 @@ import asyncio, base64, ctypes, datetime, glob, io, ipaddress, json, os, re, shu
 IMPORT_CHECK = (  # FRIDAY.exe --import-check <report>: app modules + the libraries they load lazily, in the app's own
     # import order (faster_whisper/ctranslate2 before onnxruntime users and winrt — the reverse access-violates)
     "numpy", "faster_whisper", "ctranslate2", "memory", "rules", "docsearch", "tts_th", "wakeword",
-    "packs", "brain", "brain_claude", "brain_openai", "sessions",
+    "packs", "sttbench", "brain", "brain_claude", "brain_openai", "sessions",
     "skills", "documents", "hardware", "security", "workspace", "weather", "reminders", "media", "tasks", "windows",
     "journal", "voiceid", "remote", "peer", "computer", "project", "categories", "video", "ui",
     "soundfile", "vaniratts", "vachanatts", "vachanatts.en2th", "vachanatts.voice", "vachana_g2p", "pythainlp",
@@ -3452,6 +3452,20 @@ def ensure_ears(ask=True):
     return False
 
 
+def _run_stt(detector, thai_model, en_model, audio16k, lang=None):
+    """One utterance -> (lang, text): `detector` picks the language (English only when confident: on short Thai
+    words it guesses Vietnamese/Korean), Thai goes to thai_model() when there is one. The app and the CPU benchmark
+    (sttbench, --voice-smoke with FRIDAY_STT_BENCH) both go through here, so they decode the same way."""
+    if lang is None:
+        _, _, probs = detector.detect_language(audio16k)
+        lang = "en" if dict(probs).get("en", 0) >= EN_MIN_PROB else "th"
+    model = (lang == "th" and thai_model()) or en_model
+    # recordings are already cut by Silero VAD: vad_filter here only dropped short words ("ทดสอบ" -> "")
+    segs, _ = model.transcribe(audio16k, language=lang, task="transcribe", vad_filter=False, beam_size=1,
+                               condition_on_previous_text=False)
+    return lang, "".join(s.text for s in segs).strip()
+
+
 def _transcribe(audio16k, quiet):
     """turbo decides the language (English only when confident: on short Thai words it guesses Vietnamese/Korean);
     Thai goes to Thonburian Whisper, fine-tuned on Thai (CER on short commands 0.90 -> 0.44, sentences 0.13 -> 0.02)."""
@@ -3462,19 +3476,14 @@ def _transcribe(audio16k, quiet):
     if _whisper is None:
         print("  (กำลังโหลด Whisper ครั้งแรก...)")
         _whisper = WhisperModel(WHISPER, device=WHISPER_DEVICE, compute_type=ct)
-    lang = LANG
-    if lang is None:
-        _, _, probs = _whisper.detect_language(audio16k)
-        lang = "en" if dict(probs).get("en", 0) >= EN_MIN_PROB else "th"
-    model = _whisper
-    if lang == "th" and WHISPER_TH:
+    def thai_model():
+        global _whisper_th
+        if not WHISPER_TH:
+            return None
         if _whisper_th is None:
             _whisper_th = WhisperModel(WHISPER_TH, device=WHISPER_DEVICE, compute_type=ct)
-        model = _whisper_th
-    # recordings are already cut by Silero VAD: vad_filter here only dropped short words ("ทดสอบ" -> "")
-    segs, _ = model.transcribe(audio16k, language=lang, task="transcribe", vad_filter=False, beam_size=1,
-                               condition_on_previous_text=False)
-    text = "".join(s.text for s in segs).strip()
+        return _whisper_th
+    _, text = _run_stt(_whisper, thai_model, _whisper, audio16k, LANG)
     if HALLUCINATION.search(text):
         if not quiet:
             print(f"  (ฟังไม่ชัด ตัดทิ้ง: {text[:60]})")
@@ -5137,6 +5146,42 @@ def voice_smoke(report):
         return f"{dt:.1f} s for {len(clip) / 16000:.1f} s of audio (x{dt / (len(clip) / 16000):.1f} real time) on {WHISPER_DEVICE}: {text!r}"
     step("transcribe English again, models warm", lambda: warm("en", "English"))
     step("transcribe Thai again, models warm", lambda: warm("th", "Thai"))
+
+    # 5b. option 1 experiment: smaller models on CPU, same clips, same decode path (only when CI sets the folder)
+    bench_dir = os.environ.get("FRIDAY_STT_BENCH")
+    if bench_dir:
+        import sttbench
+        ct = "int8_float16" if WHISPER_DEVICE == "cuda" else "int8"
+        loaded = {}
+
+        def model(name):
+            if name not in loaded:
+                path = os.path.join(bench_dir, name)
+                loaded[name] = WhisperModel(path if os.path.isdir(path) else name, device=WHISPER_DEVICE, compute_type=ct)
+            return loaded[name]
+        configs = {  # detector, Thai model, English model
+            "A now: turbo + Thonburian medium": (WHISPER, WHISPER_TH, WHISPER),
+            "B base + Thonburian medium + base.en": ("base", WHISPER_TH, "base.en"),
+            "C base + th-small + base.en": ("base", "th-small", "base.en"),
+            "D tiny + distill-th-small + base.en": ("tiny", "distill-th-small", "base.en"),
+        }
+        TH = ["เปิดเพลงให้หน่อย", "พรุ่งนี้ฝนจะตกไหม", "ตั้งเตือนอีกสิบนาที", "วันนี้มีงานอะไรบ้าง", "ปิดโปรแกรมทั้งหมด"]
+        EN = ["Open the music player.", "What is the weather tomorrow?", "Set a timer for ten minutes.",
+              "What do I have to do today?", "Turn the volume down."]
+
+        def bench():
+            clips = [sttbench.Clip("th", t, wav_to_16k(tts_th.synth_vanira(t, "1"))) for t in TH] + \
+                    [sttbench.Clip("en", t, wav_to_16k(tts_th.synth_en(t))) for t in EN]
+
+            def run(name, clip):
+                det, th, en = configs[name]
+                return _run_stt(model(det), lambda: model(th), model(en), np.asarray(clip.audio, np.float32))
+            rows = sttbench.bench(list(configs), clips, run, now=time.time)
+            return "\n" + "\n".join(
+                f"  {r['config']}: lang {r['lang_ok']} · Thai CER {r['th_cer']} · English WER {r['en_wer']} · "
+                f"{r['sec_per_clip']} s/clip (x{r['x_realtime']} real time, {r['note']})\n    " + " | ".join(r["samples"])
+                for r in rows)
+        step(f"STT benchmark on {WHISPER_DEVICE} (option 1, same clips)", bench)
 
     # 6. first run: the key window's check and the real DPAPI store, with a fake Anthropic (no key, no network)
     def first_run():
