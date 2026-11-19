@@ -55,6 +55,7 @@
   body:not([data-state="idle"]) .stop { display: inline-flex; }
   .status { font-size: 13px; color: var(--dim); min-height: 1.5em; transition: color .3s; }
   body[data-state="listening"] .status { color: var(--cyan); }
+  body[data-state="transcribing"] .status { color: #8fb8ff; }
   body[data-state="thinking"] .status { color: #b9a4ff; }
   body[data-state="speaking"] .status { color: #ff9be9; }
 
@@ -154,7 +155,7 @@
     <button class="stop" id="stop" type="button" title="หยุด" aria-label="หยุด"></button>
   </form>
 <script>
-  const LABEL = { idle: "", listening: "กำลังฟัง…", thinking: "กำลังคิด…", speaking: "กำลังพูด…" };
+  const LABEL = { idle: "", listening: "🎤 ฟังอยู่…", transcribing: "⏳ กำลังถอดเสียง…", thinking: "💭 กำลังคิด…", speaking: "กำลังพูด…" };
   const PAGE = 20;      // messages shown per page; older pages load when scrolled to the top
   let loaded = 0, more = false, loading = false, images = {};
   const chat = document.getElementById("chat"), status = document.getElementById("status");
@@ -244,6 +245,7 @@
     const LOOK = {   // colours, glow tint, swirl speed, ripple, glow
       idle:      { c: ["#3ee6ff", "#8a5cff", "#2f7bff", "#ff4fd8"], tint: [62, 200, 255], speed: .7, wave: .35, glow: .45 },
       listening: { c: ["#3ee6ff", "#29b6ff", "#7af0ff", "#8a5cff"], tint: [62, 230, 255], speed: .8, wave: .4, glow: .75 },
+      transcribing: { c: ["#29b6ff", "#8a5cff", "#3ee6ff", "#b45cff"], tint: [110, 170, 255], speed: .9, wave: .3, glow: .65 },  // mic closed, turning speech into text
       thinking:  { c: ["#8a5cff", "#b45cff", "#3ee6ff", "#ff4fd8"], tint: [160, 110, 255], speed: 1.0, wave: .4, glow: .7 },  // §48: calm
       speaking:  { c: ["#ff4fd8", "#ff8a3d", "#8a5cff", "#3ee6ff"], tint: [255, 120, 210], speed: 1.1, wave: .6, glow: .85 },
     };
@@ -344,7 +346,7 @@
     document.addEventListener("visibilitychange", wake);
     requestAnimationFrame(() => { fit(); wake(); });
     return {
-      state(s) { look = LOOK[s] || LOOK.idle; if (s === "idle" || s === "thinking") target = 0; wake(); },
+      state(s) { look = LOOK[s] || LOOK.idle; if (s === "idle" || s === "thinking" || s === "transcribing") target = 0; wake(); },
       level(v) { target = Math.max(0, Math.min(1, +v || 0)); lastLevelAt = performance.now(); wake(); },
       visible(v) { visible = !!v; wake(); },
       probe() { const n0 = drawn; setTimeout(() => post({ fps: (drawn - n0) / 2, hidden: document.hidden, visible }), 2000); },

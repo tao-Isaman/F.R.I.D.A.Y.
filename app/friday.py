@@ -3326,9 +3326,24 @@ HALLUCINATION = re.compile(r"ขอบคุณที่ติดตาม|ฝ�
 WHISPER_LOCK = threading.Lock()  # live captions and the real transcript share the models: one at a time
 
 
+LAST_STT = (0.0, 0.0)  # (s waiting for the Whisper lock, s decoding) of the last transcribe(): the log's timings
+
+
 def transcribe(audio16k, quiet=False):
+    global LAST_STT
+    t0 = time.time()
     with WHISPER_LOCK:
-        return _transcribe(audio16k, quiet)
+        t1 = time.time()
+        text = _transcribe(audio16k, quiet)
+    if not quiet:
+        LAST_STT = (t1 - t0, time.time() - t1)
+    return text
+
+
+def live_caption():
+    """Live captions transcribe the audio so far every second. On the CPU one pass takes longer than the sentence
+    (x10 real time, voice smoke 2026-11-19) and holds the lock the real transcript then waits for: GPU only."""
+    return LiveCaption() if WHISPER_DEVICE == "cuda" else None
 
 
 class LiveCaption:
@@ -4642,14 +4657,18 @@ def wake_loop(history):
                     if BARGED.is_set():  # cut off mid-sentence: a short beep, then listen for what the user says
                         BARGED.clear()
                         winsound.Beep(880, 90)
-                    caption = LiveCaption()
+                    caption = live_caption()
                     RECORDING.set()
                     try:
                         audio = wakeword.record_utterance(no_speech_timeout=timeout, on_audio=caption, stop=PANEL_CLOSED,
                                                           on_level=MicLevel())
                     finally:
                         RECORDING.clear()
-                    caption.over = True
+                    t_end = time.time()  # the recording ended here (silence after speech, or the cap)
+                    if caption:
+                        caption.over = True
+                    if len(audio):
+                        panel.send(state="transcribing")  # the owner stopped talking: say so, not "listening"
                     if len(audio) and voiceid.enrolled():  # §59 TV / someone else gets no answer
                         s = voiceid.score(audio)  # None = too short to tell: not let through either (review §66)
                         if s is None or s < voiceid.threshold():
@@ -4657,6 +4676,10 @@ def wake_loop(history):
                                   " — ไม่ตอบ กลับไปรอคำปลุก")
                             break  # standby: a TV that keeps talking must not hold the conversation (and mic) open
                     text = WAKE_PREFIX.sub("", transcribe(audio)) if len(audio) else ""  # "Hey Friday, เปิดเพลง" -> "เปิดเพลง"
+                    if len(audio):
+                        wait, decode = LAST_STT
+                        print(f"  ⏱ เสียง {len(audio) / 16000:.1f} s · ฟังจบ→เริ่มถอด {time.time() - t_end - decode:.1f} s "
+                              f"(รอคิว {wait:.1f} s) · ถอดเสียง {decode:.1f} s บน {WHISPER_DEVICE}")
                     if not text or PANEL_CLOSED.is_set():
                         break
                     print(f"\nคุณ (เสียง)> {text}")
@@ -5025,6 +5048,38 @@ def voice_smoke(report):
         need(heard and not silent, f"'Hey Friday' clip: {heard}, silence: {silent}")
         return "'Hey Friday' clip wakes it, 3 s of silence does not"
     step("wake word fires on a spoken 'Hey Friday'", wake)
+
+    # 4b. end of speech with steady background noise (fan / air-con): the recording must stop soon after the
+    # speaker does, with the real Silero VAD — the owner saw "listening" long after he stopped talking
+    def noisy(kind):
+        clip = clips["en"]
+        rng = np.random.default_rng(1)
+        speech_end = np.nonzero(np.abs(clip) > 0.02)[0][-1] / 16000  # last audible sample of the clean clip
+        n = len(clip) + 8 * 16000
+        if kind == "white":
+            noise = rng.standard_normal(n)
+        else:  # pink: 1/f spectrum
+            spec = np.fft.rfft(rng.standard_normal(n))
+            spec /= np.sqrt(np.maximum(np.arange(len(spec)), 1))
+            noise = np.fft.irfft(spec, n)
+        noise *= 10 ** (-35 / 20) / np.sqrt(np.mean(noise ** 2))  # -35 dBFS RMS
+        mixed = noise.astype(np.float32)
+        mixed[: len(clip)] += clip
+        f = frames_of(mixed, tail_s=0)
+        used = []
+        t0 = time.time()
+        audio = wakeword.record_utterance(frames=(used.append(x) or x for x in f))
+        took = time.time() - t0
+        ended = len(used) * wakeword.FRAME / 16000
+        late = ended - speech_end
+        wakeword._vad.reset_states()
+        noise_prob = max(wakeword._vad.predict(x, frame_size=640) for x in frames_of(noise.astype(np.float32), tail_s=0)[:50])
+        need(len(audio) and late <= wakeword.END_SILENCE + 1.0,
+             f"stopped {late:.2f} s after speech (limit {wakeword.END_SILENCE + 1.0:.1f}); VAD on the noise alone {noise_prob:.2f}")
+        return (f"speech ended at {speech_end:.2f} s, recording stopped at {ended:.2f} s (+{late:.2f} s); "
+                f"VAD on the noise alone max {noise_prob:.2f}; processing {took:.2f} s")
+    step("end of speech with steady white noise (-35 dBFS)", lambda: noisy("white"))
+    step("end of speech with steady pink noise (-35 dBFS)", lambda: noisy("pink"))
 
     # 5. Whisper: the models the owner downloads, then the app's own transcribe()
     def whisper_models():
