@@ -1,7 +1,8 @@
 ﻿; FRIDAY installer (PLAN §75) — built by installer\build.py (passes /DAppVersion=x.y.z)
-; Per-user, no admin: FRIDAY + its own voice program + voice models + default settings. During setup it downloads
-; Ollama (if missing) and the LLM qwen3.5:4b, sets Ollama's "don't hog the PC" variables, and pre-downloads the
-; speech-recognition models. Optional (§87): cua-driver 0.37.0 for the computer tool — the installer scripts read and
+; Per-user, no admin: FRIDAY + its own voice program + voice models + default settings. Claude edition: the brain is
+; Claude (the API key is asked in FRIDAY's own first-run window, never by setup). Optional, unticked: Ollama + the local
+; LLM qwen3.5:4b with Ollama's "don't hog the PC" variables, and the ~3 GB speech-recognition models (else FRIDAY asks
+; and downloads them the first time the owner speaks). Optional (§87): cua-driver 0.37.0 for the computer tool — the installer scripts read and
 ; bundled in installer\cua\, no logon task, telemetry off. Nothing personal is shipped (no data\, no secrets, default settings.json).
 
 #ifndef AppVersion
@@ -58,11 +59,17 @@ english.CuaTask=Install cua-driver so FRIDAY can use apps for you (from GitHub, 
 thai.GetCua=กำลังติดตั้ง cua-driver…
 english.GetCua=Installing cua-driver…
 english.NetFail=Some downloads failed (%1) — check the internet and run setup again; FRIDAY also downloads on first use.
+thai.LocalBrainTask=ติดตั้งสมองในเครื่องด้วย (Ollama + qwen3.5:4b ~3.4 GB · ต้องมีการ์ดจอ) — ไม่ติ๊กก็ใช้ Claude ได้
+english.LocalBrainTask=Also install a local brain (Ollama + qwen3.5:4b, ~3.4 GB, needs a GPU) — not needed for Claude
+thai.VoiceModelsTask=โหลดโมเดลฟังเสียงตอนนี้เลย (~3 GB) — ไม่ติ๊ก = FRIDAY ถามแล้วโหลดตอนพูดครั้งแรก
+english.VoiceModelsTask=Download the speech-recognition models now (~3 GB) — else FRIDAY asks the first time you speak
 
 [Tasks]
 Name: "startup"; Description: "{cm:Startup}"
 Name: "startmenu"; Description: "{cm:StartMenu}"
 Name: "cuadriver"; Description: "{cm:CuaTask}"; Flags: unchecked
+Name: "localbrain"; Description: "{cm:LocalBrainTask}"; Flags: unchecked
+Name: "voicemodels"; Description: "{cm:VoiceModelsTask}"; Flags: unchecked
 
 [Files]
 Source: "..\dist\FRIDAY\*"; DestDir: "{app}\FRIDAY"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -85,13 +92,13 @@ Name: "{userprograms}\FRIDAY"; Filename: "{app}\FRIDAY\FRIDAY.exe"; WorkingDir: 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FRIDAY"; ValueData: """{app}\FRIDAY\FRIDAY.exe"""; Flags: uninsdeletevalue; Tasks: startup
 ; Ollama: one model at a time, one request at a time, free the GPU after 5 idle minutes (FRIDAY's "don't disturb the PC" rule)
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_MAX_LOADED_MODELS"; ValueData: "1"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_NUM_PARALLEL"; ValueData: "1"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_MAX_QUEUE"; ValueData: "2"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_KEEP_ALIVE"; ValueData: "5m"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_CONTEXT_LENGTH"; ValueData: "8192"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_FLASH_ATTENTION"; ValueData: "1"
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_KV_CACHE_TYPE"; ValueData: "q8_0"
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_MAX_LOADED_MODELS"; ValueData: "1"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_NUM_PARALLEL"; ValueData: "1"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_MAX_QUEUE"; ValueData: "2"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_KEEP_ALIVE"; ValueData: "5m"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_CONTEXT_LENGTH"; ValueData: "8192"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_FLASH_ATTENTION"; ValueData: "1"; Tasks: localbrain
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OLLAMA_KV_CACHE_TYPE"; ValueData: "q8_0"; Tasks: localbrain
 
 [Run]
 Filename: "{app}\FRIDAY\FRIDAY.exe"; Description: "{cm:LaunchProgram,F.R.I.D.A.Y.}"; Flags: nowait postinstall skipifsilent
@@ -190,9 +197,12 @@ begin
   if CurStep = ssPostInstall then
   begin
     CheckGpu();
-    GetOllama();
-    PullModel();
-    Prefetch();
+    if WizardIsTaskSelected('localbrain') then
+    begin
+      GetOllama();
+      PullModel();
+    end;
+    if WizardIsTaskSelected('voicemodels') then Prefetch();
     if WizardIsTaskSelected('cuadriver') then GetCua();
     if (Failed <> '') and not WizardSilent() then
       MsgBox(FmtMessage(CustomMessage('NetFail'), [Failed]), mbError, MB_OK);

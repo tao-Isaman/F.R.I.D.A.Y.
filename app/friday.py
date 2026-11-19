@@ -3290,11 +3290,63 @@ class LiveCaption:
             self.busy.clear()
 
 
+BIG_EARS = tuple(m for m in (WHISPER, WHISPER_TH) if m)  # ~3 GB together: not in the Claude edition's installer
+EARS = {}  # "asked": the owner answered this session · "busy": downloading now
+
+
+def _download_model(name, local_files_only=False):
+    from faster_whisper.utils import download_model
+    return download_model(name, local_files_only=local_files_only)
+
+
+def _background(fn):
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def ensure_ears(ask=True):
+    """True when the speech models are on this PC. Otherwise ask once (typing keeps working), fetch them in the
+    background and say in the panel when listening is ready; this utterance is skipped (False). ask=False (live
+    captions while recording) only checks."""
+    try:
+        for m in BIG_EARS:
+            _download_model(m, local_files_only=True)
+        return True
+    except Exception:
+        pass
+    if not ask:
+        return False
+    if EARS.get("busy") or EARS.get("asked"):
+        if EARS.get("busy"):
+            panel.send(msg={"role": "tool", "text": "⬇ ยังโหลดโมเดลฟังเสียงอยู่ — ระหว่างนี้พิมพ์คุยได้ค่ะ"})
+        return False
+    EARS["asked"] = True
+    if not confirm("ดาวน์โหลดโมเดลฟังเสียง (~3 GB) ตอนนี้ไหมคะ? ระหว่างโหลดพิมพ์คุยได้ตามปกติ", ""):
+        panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดโมเดลฟังเสียง — พิมพ์คุยได้ตามปกติ ลองพูดใหม่เมื่อไหร่ก็ได้หลังเปิด FRIDAY ใหม่"})
+        return False
+    EARS["busy"] = True
+
+    def fetch():
+        try:
+            for i, m in enumerate(BIG_EARS, 1):
+                panel.send(msg={"role": "tool", "text": f"⬇ โหลดโมเดลฟังเสียง {i}/{len(BIG_EARS)}: {m}"})
+                _download_model(m)
+            panel.send(msg={"role": "tool", "text": "✅ พร้อมฟังเสียงแล้วค่ะ — พูดได้เลย"})
+        except Exception as e:
+            EARS.pop("asked", None)  # a failed download may be tried again on the next utterance
+            panel.send(msg={"role": "tool", "text": f"โหลดโมเดลฟังเสียงไม่สำเร็จ ({type(e).__name__}) — ตรวจเน็ตแล้วลองพูดใหม่"})
+        finally:
+            EARS.pop("busy", None)
+    _background(fetch)
+    return False
+
+
 def _transcribe(audio16k, quiet):
     """turbo decides the language (English only when confident: on short Thai words it guesses Vietnamese/Korean);
     Thai goes to Thonburian Whisper, fine-tuned on Thai (CER on short commands 0.90 -> 0.44, sentences 0.13 -> 0.02)."""
     global _whisper, _whisper_th
     ct = "int8_float16" if WHISPER_DEVICE == "cuda" else "int8"
+    if _whisper is None and not ensure_ears(ask=not quiet):
+        return ""  # Claude edition: the models come on first use (asked, in the background)
     if _whisper is None:
         print("  (กำลังโหลด Whisper ครั้งแรก...)")
         _whisper = WhisperModel(WHISPER, device=WHISPER_DEVICE, compute_type=ct)
