@@ -5051,35 +5051,58 @@ def voice_smoke(report):
 
     # 4b. end of speech with steady background noise (fan / air-con): the recording must stop soon after the
     # speaker does, with the real Silero VAD — the owner saw "listening" long after he stopped talking
-    def noisy(kind):
-        clip = clips["en"]
-        rng = np.random.default_rng(1)
-        speech_end = np.nonzero(np.abs(clip) > 0.02)[0][-1] / 16000  # last audible sample of the clean clip
-        n = len(clip) + 8 * 16000
+    def make_noise(kind, n, dbfs, rng):
         if kind == "white":
             noise = rng.standard_normal(n)
-        else:  # pink: 1/f spectrum
+        elif kind == "pink":  # 1/f spectrum
             spec = np.fft.rfft(rng.standard_normal(n))
             spec /= np.sqrt(np.maximum(np.arange(len(spec)), 1))
             noise = np.fft.irfft(spec, n)
-        noise *= 10 ** (-35 / 20) / np.sqrt(np.mean(noise ** 2))  # -35 dBFS RMS
+        else:  # "fan" (synthetic, not a recording): brown rumble + 100/200 Hz motor hum + 25 Hz blade wobble
+            t = np.arange(n) / 16000
+            brown = np.cumsum(rng.standard_normal(n))
+            brown -= np.convolve(brown, np.ones(1600) / 1600, mode="same")
+            hum = 0.6 * np.sin(2 * np.pi * 100 * t) + 0.3 * np.sin(2 * np.pi * 200 * t)
+            noise = (brown / (np.std(brown) or 1) + hum) * (1 + 0.2 * np.sin(2 * np.pi * 25 * t))
+        return noise * 10 ** (dbfs / 20) / np.sqrt(np.mean(noise ** 2))  # dBFS RMS
+
+    def end_with_noise(kind, dbfs):
+        """(seconds the recording ran past the end of speech, max VAD score on the noise alone)."""
+        clip = clips["en"]
+        rng = np.random.default_rng(1)
+        speech_end = np.nonzero(np.abs(clip) > 0.02)[0][-1] / 16000  # last audible sample of the clean clip
+        noise = make_noise(kind, len(clip) + 8 * 16000, dbfs, rng)
         mixed = noise.astype(np.float32)
         mixed[: len(clip)] += clip
-        f = frames_of(mixed, tail_s=0)
         used = []
-        t0 = time.time()
-        audio = wakeword.record_utterance(frames=(used.append(x) or x for x in f))
-        took = time.time() - t0
-        ended = len(used) * wakeword.FRAME / 16000
-        late = ended - speech_end
+        audio = wakeword.record_utterance(frames=(used.append(x) or x for x in frames_of(mixed, tail_s=0)))
+        late = len(used) * wakeword.FRAME / 16000 - speech_end
         wakeword._vad.reset_states()
-        noise_prob = max(wakeword._vad.predict(x, frame_size=640) for x in frames_of(noise.astype(np.float32), tail_s=0)[:50])
-        need(len(audio) and late <= wakeword.END_SILENCE + 1.0,
+        prob = max(wakeword._vad.predict(x, frame_size=640) for x in frames_of(noise.astype(np.float32), tail_s=0)[:50])
+        return late, prob, bool(len(audio))
+
+    def noisy(kind):
+        late, noise_prob, got = end_with_noise(kind, -35)
+        need(got and late <= wakeword.END_SILENCE + 1.0,
              f"stopped {late:.2f} s after speech (limit {wakeword.END_SILENCE + 1.0:.1f}); VAD on the noise alone {noise_prob:.2f}")
-        return (f"speech ended at {speech_end:.2f} s, recording stopped at {ended:.2f} s (+{late:.2f} s); "
-                f"VAD on the noise alone max {noise_prob:.2f}; processing {took:.2f} s")
+        return f"recording stopped +{late:.2f} s after speech; VAD on the noise alone max {noise_prob:.2f}"
+
+    def noise_sweep():  # report only (never fails): where does the 0.5 speech threshold give way?
+        out = []
+        for kind in ("white", "pink", "fan"):
+            cells = []
+            for db in (-35, -30, -25, -20):
+                try:
+                    late, prob, _ = end_with_noise(kind, db)
+                    cells.append(f"{db} dBFS: +{late:.1f} s (VAD {prob:.2f}){' ← cap' if late > 10 else ''}")
+                except Exception as e:
+                    cells.append(f"{db} dBFS: {type(e).__name__}")
+            out.append(f"  {kind}: " + " · ".join(cells))
+        return "report only — time past the end of speech, max VAD score of the noise alone\n" + "\n".join(out)
+
     step("end of speech with steady white noise (-35 dBFS)", lambda: noisy("white"))
     step("end of speech with steady pink noise (-35 dBFS)", lambda: noisy("pink"))
+    step("noise sweep -35…-20 dBFS (white / pink / synthetic fan)", noise_sweep)
 
     # 5. Whisper: the models the owner downloads, then the app's own transcribe()
     def whisper_models():
