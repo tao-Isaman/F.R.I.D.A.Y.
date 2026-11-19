@@ -16,6 +16,7 @@ fastembed
 faster-whisper
 sherpa-onnx
 pythainlp
+soundfile
 openwakeword
 pystray
 pywebview

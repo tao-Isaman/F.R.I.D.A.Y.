@@ -6,6 +6,18 @@ Run:  friday.cmd            (type a message, or press Enter on an empty line to 
 """
 import asyncio, base64, ctypes, datetime, glob, io, ipaddress, json, os, re, shutil, socket, subprocess, sys, threading, time, wave, winsound
 
+IMPORT_CHECK = (  # FRIDAY.exe --import-check <report>: app modules + the libraries they load lazily, in the app's own
+    # import order (faster_whisper/ctranslate2 before onnxruntime users and winrt — the reverse access-violates)
+    "numpy", "faster_whisper", "ctranslate2", "memory", "rules", "docsearch", "tts_th", "wakeword",
+    "packs", "brain", "brain_claude", "brain_openai", "sessions",
+    "skills", "documents", "hardware", "security", "workspace", "weather", "reminders", "media", "tasks", "windows",
+    "journal", "voiceid", "remote", "peer", "computer", "project", "categories", "video", "ui",
+    "soundfile", "vaniratts", "vachanatts", "vachanatts.en2th", "vachanatts.voice", "vachana_g2p", "pythainlp",
+    "onnxruntime", "sherpa_onnx", "openwakeword", "openwakeword.model", "fastembed",
+    "huggingface_hub", "webview", "pystray", "anthropic", "docx", "pptx", "openpyxl", "pypdf", "cryptography", "segno",
+    "PIL", "comtypes", "pycaw", "monitorcontrol", "serial", "winrt.windows.media.control",
+    "winrt.windows.security.credentials.ui", "winrt.windows.media.speechsynthesis", "winrt.windows.storage.streams",
+)
 FROZEN = getattr(sys, "frozen", False)  # §69 FRIDAY.exe (PyInstaller): code inside the exe, data in E:\friday
 if FROZEN and not os.environ.get("FRIDAY_ROOT"):  # the folder above the exe that has config\settings.json
     _r = os.path.dirname(sys.executable)
@@ -17,9 +29,33 @@ if FROZEN:
         if getattr(sys, _s) is None:
             setattr(sys, _s, open(os.devnull, "w", encoding="utf-8"))
     if "--serve" in sys.argv:  # the Thai-voice worker (tts_th spawns the exe again)
-        import tts_th
-        tts_th._serve(*sys.argv[sys.argv.index("--serve") + 1:][:2])
+        try:
+            import tts_th
+            tts_th._serve(*sys.argv[sys.argv.index("--serve") + 1:][:2])
+        except BaseException:  # never PyInstaller's crash dialog: log it and exit; FRIDAY speaks with the Windows voice
+            import traceback
+            try:
+                _logs = os.path.join(os.environ.get("FRIDAY_ROOT", os.path.dirname(sys.executable)), "data", "logs")
+                os.makedirs(_logs, exist_ok=True)
+                with open(os.path.join(_logs, "tts-worker.log"), "a", encoding="utf-8") as _f:
+                    _f.write(traceback.format_exc() + "\n")
+            except OSError:
+                pass
+            sys.exit(3)
         sys.exit(0)
+    if "--import-check" in sys.argv:  # CI: every module the exe (and its voice worker) loads must import here — a missing
+        import importlib, traceback  # hidden import otherwise shows up only on the owner's PC (soundfile, 2026-11-19)
+        _bad = []
+        for _n in IMPORT_CHECK:
+            try:
+                importlib.import_module(_n)
+            except BaseException as _e:
+                _bad.append(f"{_n}: {type(_e).__name__}: {_e}")
+        _i = sys.argv.index("--import-check") + 1
+        if _i < len(sys.argv):
+            with open(sys.argv[_i], "w", encoding="utf-8") as _f:
+                _f.write("\n".join(_bad) or f"IMPORT CHECK OK ({len(IMPORT_CHECK)} modules)")
+        sys.exit(1 if _bad else 0)
     if "--ui" in sys.argv:  # the panel window process
         import ui
         ui.main()
@@ -2754,14 +2790,17 @@ def arm_tts_release():
     _release_timer.start()
 
 
+TTS_OFF = {}  # engine -> why: a Thai voice that failed once this session is not retried (each try = a new worker)
+
+
 def tts_wav(text):
     # vanira/vachana: Thai + English runs mixed (synth_mixed); OneCore only as the fallback when a worker fails.
     # Piper drops Latin letters ("เปิด YouTube" -> "เปิด"), so for Piper mixed text stays on Pattara, which reads both
     global _release_timer
     thai = re.search(r"[฀-๿]", text)
     engine, _, voice = TH_VOICE.partition(":")
-    if engine in ("vanira", "vachana") and not packs.installed("voice"):
-        engine = "pattara"  # Claude edition: the Windows voice until the voice pack is on this PC (ensure_ears)
+    if engine in ("vanira", "vachana") and not packs.installed("voice") or engine in TTS_OFF:
+        engine = "pattara"  # the Windows voice until the voice pack is on this PC (ensure_ears), or after a failure
     if engine in ("vanira", "vachana") or thai and engine == "piper" and not re.search(r"[A-Za-z]", text):
         try:
             if engine == "piper":
@@ -2776,6 +2815,9 @@ def tts_wav(text):
             import traceback
             where = traceback.extract_tb(e.__traceback__)[-1]
             print(f"  ({engine} ใช้ไม่ได้ ใช้เสียง Pattara แทน: {type(e).__name__}: {e} @ {os.path.basename(where.filename)}:{where.lineno})")
+            TTS_OFF[engine] = f"{type(e).__name__}: {e}"
+            panel.send(msg={"role": "tool", "text": f"เสียงพูดไทย ({engine}) ใช้ไม่ได้ — ใช้เสียง Windows แทนจนกว่าจะเปิด FRIDAY ใหม่ "
+                                                     "(รายละเอียดใน data\\logs\\tts-worker.log)"})
     return asyncio.run(_synth(text))
 
 

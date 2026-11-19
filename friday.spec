@@ -19,7 +19,7 @@ for pkg in ("ctranslate2", "faster_whisper", "onnxruntime", "sherpa_onnx", "open
             "pystray", "winrt", "clr_loader", "pythonnet", "docx", "pptx", "openpyxl", "pypdf",
             "sounddevice", "_sounddevice_data", "monitorcontrol", "comtypes", "pycaw", "qrcode",
             "vaniratts", "vachanatts", "vachana_g2p", "pythainlp", "pycrfsuite", "ssg",
-            "cryptography", "segno", "anthropic"):  # Thai voice + its word data · phone TLS · QR · §84 Claude brain
+            "cryptography", "segno", "anthropic", "soundfile", "_soundfile_data"):  # soundfile: vaniratts imports it (undeclared) · Thai voice + its word data · phone TLS · QR · §84 Claude brain
     try:
         d, b, h = collect_all(pkg)
     except Exception:

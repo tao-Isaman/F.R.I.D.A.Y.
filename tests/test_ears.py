@@ -155,3 +155,21 @@ def test_whisper_runs_on_the_gpu_only_with_the_gpu_pack(fr, monkeypatch):
 
 async def _done(v):
     return v
+
+
+def test_a_broken_thai_voice_falls_back_once_and_stays_off(fr, monkeypatch):
+    _setup(fr, monkeypatch, have=("voice",))
+    monkeypatch.setattr(fr, "TTS_OFF", {})
+    monkeypatch.setattr(fr, "TH_VOICE", "vanira:1")
+    calls, used = [], []
+
+    def broken(*a, **k):
+        calls.append(1)
+        raise RuntimeError("tts_th worker died")
+    monkeypatch.setattr(fr.tts_th, "synth_mixed", broken)
+    monkeypatch.setattr(fr, "_synth", lambda text: used.append("windows") or _done(b""))
+    fr.tts_wav("สวัสดีค่ะ")
+    fr.tts_wav("วันนี้อากาศดี")
+    assert len(calls) == 1 and used == ["windows", "windows"]  # no new worker for every reply
+    told = [m["msg"]["text"] for m in fr.ui.panel if "msg" in m]
+    assert sum("เสียง Windows" in t for t in told) == 1, told

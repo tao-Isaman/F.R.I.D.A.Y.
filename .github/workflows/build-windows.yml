@@ -74,6 +74,15 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
           .venv\Scripts\pyinstaller friday.spec --noconfirm
           .venv-tts\Scripts\pyinstaller voice.spec --noconfirm
+      - name: import check (every module FRIDAY.exe loads)
+        shell: pwsh
+        run: |
+          # A hidden import PyInstaller missed only fails on the owner's PC (soundfile, 2026-11-19): import them all here.
+          New-Item -ItemType Directory -Force D:\friday-root\config | Out-Null
+          $env:FRIDAY_ROOT = "D:\friday-root"
+          $p = Start-Process dist\FRIDAY\FRIDAY.exe -ArgumentList "--import-check", "D:\friday\import-check.txt" -Wait -PassThru
+          Get-Content import-check.txt
+          if ($p.ExitCode -ne 0) { Write-Error "import check failed (exit $($p.ExitCode))"; exit 1 }
       - name: size report (what the installer carries)
         shell: pwsh
         run: |
@@ -89,7 +98,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: size-report-${{ github.sha }}
-          path: D:/friday/size-report.txt
+          path: |
+            D:/friday/size-report.txt
+            D:/friday/import-check.txt
           retention-days: 14
       - name: Inno Setup
         shell: pwsh

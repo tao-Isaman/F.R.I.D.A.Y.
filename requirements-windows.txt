@@ -23,6 +23,7 @@ pythainlp
 python-crfsuite
 ssg
 vaniratts
+soundfile  # vaniratts imports it but does not declare it
 vachanatts
 vachana-g2p
 pystray
