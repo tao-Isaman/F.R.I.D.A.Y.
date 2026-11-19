@@ -5049,6 +5049,17 @@ def voice_smoke(report):
         return f"{text!r} (clip: {src})"
     step("transcribe Thai speech", hear_th)
 
+    # Warm timings: the steps above include loading the models; the owner waits this long on every later sentence.
+    def warm(key, lang):
+        clip = clips.get(key)
+        need(clip is not None, f"no {lang} clip")
+        t0 = time.time()
+        text = transcribe(clip)
+        dt = time.time() - t0
+        return f"{dt:.1f} s for {len(clip) / 16000:.1f} s of audio (x{dt / (len(clip) / 16000):.1f} real time) on {WHISPER_DEVICE}: {text!r}"
+    step("transcribe English again, models warm", lambda: warm("en", "English"))
+    step("transcribe Thai again, models warm", lambda: warm("th", "Thai"))
+
     # 6. first run: the key window's check and the real DPAPI store, with a fake Anthropic (no key, no network)
     def first_run():
         import tempfile
