@@ -38,19 +38,33 @@ jobs:
     needs: test
     runs-on: windows-latest
     timeout-minutes: 90
+    # The repo name ends with a dot ("F.R.I.D.A.Y."): Windows drops trailing dots from folder names, so the default
+    # workspace D:\a\F.R.I.D.A.Y.\F.R.I.D.A.Y. can never exist and actions/checkout fails. Build in D:\friday instead.
+    defaults:
+      run:
+        working-directory: D:\friday
     steps:
-      - uses: actions/checkout@v4
+      - name: checkout (into D:\friday)
+        working-directory: D:\
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
+          git init friday
+          git -C friday remote add origin https://github.com/${{ github.repository }}.git
+          git -C friday fetch --depth 1 origin ${{ github.sha }}
+          git -C friday checkout --quiet FETCH_HEAD
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: venv for FRIDAY.exe
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
           python -m venv .venv
           .venv\Scripts\python -m pip install --upgrade pip
           .venv\Scripts\pip install -r requirements-windows.txt
           .venv\Scripts\pip freeze > pip-freeze-friday.txt
       - name: venv for FRIDAY-voice.exe (Piper)
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
           python -m venv .venv-tts
           .venv-tts\Scripts\python -m pip install --upgrade pip
           .venv-tts\Scripts\pip install piper-tts onnxruntime "numpy<2" pyinstaller
@@ -72,6 +86,7 @@ jobs:
           }
       - name: PyInstaller
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
           .venv\Scripts\pyinstaller friday.spec --noconfirm
           .venv-tts\Scripts\pyinstaller voice.spec --noconfirm
       - name: Inno Setup
@@ -90,8 +105,8 @@ jobs:
         with:
           name: FRIDAY-claude-edition-${{ github.sha }}
           path: |
-            dist/installer/*
-            pip-freeze-*.txt
-            models-sha256.txt
+            D:/friday/dist/installer/*
+            D:/friday/pip-freeze-*.txt
+            D:/friday/models-sha256.txt
           retention-days: 14
           if-no-files-found: error
