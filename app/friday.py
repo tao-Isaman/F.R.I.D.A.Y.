@@ -2817,7 +2817,7 @@ def tts_wav(text):
             print(f"  ({engine} ใช้ไม่ได้ ใช้เสียง Pattara แทน: {type(e).__name__}: {e} @ {os.path.basename(where.filename)}:{where.lineno})")
             TTS_OFF[engine] = f"{type(e).__name__}: {e}"
             panel.send(msg={"role": "tool", "text": f"เสียงพูดไทย ({engine}) ใช้ไม่ได้ — ใช้เสียง Windows แทนจนกว่าจะเปิด FRIDAY ใหม่ "
-                                                     "(รายละเอียดใน data\\logs\\tts-worker.log)"})
+                                                     f"(รายละเอียดใน {os.path.join(LOGS, 'tts-worker.log')})"})
     return asyncio.run(_synth(text))
 
 
