@@ -63,7 +63,7 @@ def test_ready_when_the_models_are_already_there(fr, monkeypatch):
 def test_first_voice_use_asks_then_downloads_in_the_background(fr, monkeypatch):
     d, started = _setup(fr, monkeypatch, answer=True)
     assert fr.ensure_ears() is False  # this utterance is skipped: nothing to transcribe with yet
-    assert len(fr.ui.confirms) == 1 and "3 GB" in fr.ui.confirms[0]
+    assert len(fr.ui.confirms) == 1 and fr.ears_size_text() in fr.ui.confirms[0]  # the set's real size, not a fixed "3 GB"
     assert d.fetched == [m for m in fr.BIG_EARS] and len(started) == 1
     told = [m["msg"]["text"] for m in fr.ui.panel if "msg" in m]
     assert any("พร้อมฟังเสียงแล้ว" in t for t in told), told

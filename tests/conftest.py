@@ -40,3 +40,14 @@ def fr(home, monkeypatch):
     ui.notes = []
     friday.ui = ui
     return friday
+
+
+@pytest.fixture(autouse=True)
+def no_model_downloads(monkeypatch):
+    """Tests never fetch models: a test that forgot to stub _download_model downloaded ~12 MB from Hugging Face
+    (2026-11-19). Any real download attempt now fails the test instead."""
+    import faster_whisper.utils as fwu
+
+    def refuse(*a, **k):
+        raise AssertionError(f"test tried to download a model: {a} {k}")
+    monkeypatch.setattr(fwu, "download_model", refuse)

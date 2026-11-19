@@ -68,3 +68,56 @@ def bench(configs, clips, run, now):
             "samples": samples,
         })
     return rows
+
+
+# ---------------------------------------------------------------- the owner's own voice (C/D are on hold until this)
+# FRIDAY.exe --stt-compare <folder>: records these (one window per sentence, ended by silence), then runs every model
+# set on them and writes report.txt. Real voice, real mic, real room — what the TTS clips cannot show.
+OWNER_SET = [
+    ("th", "เปิดเพลงให้หน่อย"), ("th", "พรุ่งนี้ฝนจะตกไหม"), ("th", "ตั้งเตือนอีกสิบนาที"), ("th", "วันนี้มีงานอะไรบ้าง"),
+    ("th", "ปิดโปรแกรมทั้งหมด"), ("th", "เพิ่มงานส่งรายงานวันศุกร์"), ("th", "เสียงเบาลงหน่อย"), ("th", "สลับไปหน้าต่าง vscode"),
+    ("th", "จำไว้ว่าฉันแพ้ถั่ว"), ("th", "สรุปข่าวเช้านี้ให้ฟัง"), ("th", "โทรหาแม่ตอนหกโมงเย็น"), ("th", "ช่วยอ่านอีเมลล่าสุด"),
+    ("en", "Open the music player."), ("en", "What is the weather tomorrow?"), ("en", "Set a timer for ten minutes."),
+    ("en", "What do I have to do today?"), ("en", "Turn the volume down."),
+]
+
+
+def save_clip(folder, i, lang, text, audio16k):
+    """One recorded sentence: NN.wav (16 kHz mono int16) + a line in refs.tsv (file, lang, text)."""
+    import wave, numpy as np
+    from pathlib import Path
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{i:02d}.wav"
+    with wave.open(str(folder / name), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes((np.clip(np.asarray(audio16k, np.float32), -1, 1) * 32767).astype(np.int16).tobytes())
+    with open(folder / "refs.tsv", "a", encoding="utf-8") as f:
+        f.write(f"{name}\t{lang}\t{text}\n")
+
+
+def load_set(folder):
+    import wave, numpy as np
+    from pathlib import Path
+    folder, clips = Path(folder), []
+    for line in (folder / "refs.tsv").read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        name, lang, text = line.split("\t", 2)
+        with wave.open(str(folder / name)) as w:
+            a = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+        clips.append(Clip(lang, text, a))
+    return clips
+
+
+def write_report(folder, rows, device):
+    from pathlib import Path
+    lines = [f"STT compare on the owner's voice · device {device} · warm timings (each set run once before timing)", ""]
+    for r in rows:
+        lines.append(f"{r['config']}: lang {r['lang_ok']} · Thai CER {r['th_cer']} · English WER {r['en_wer']} · "
+                     f"{r['sec_per_clip']} s/clip (x{r['x_realtime']} real time)")
+        lines += [f"    {s}" for s in r["samples"]]
+        lines.append("")
+    path = Path(folder) / "report.txt"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path

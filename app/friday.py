@@ -3315,10 +3315,11 @@ def say(text, barge=True):
 
 
 # ---------- ears: faster-whisper, loaded only when first needed ----------
-_whisper = None
+_whisper = None  # the language picker of stt_set()
 
 
 _whisper_th = None
+_whisper_en = None
 # typical Whisper inventions on short/unclear audio (YouTube-subtitle training data) and stuck repetition
 HALLUCINATION = re.compile(r"ขอบคุณที่ติดตาม|ฝากกดติดตาม|กดไลค์|subscribe|ติดตามช่อง|คลิปหน้า|thank(s| you) for watching|(\S{2,})(\s*\2){2,}", re.I)
 
@@ -3372,7 +3373,34 @@ class LiveCaption:
             self.busy.clear()
 
 
-BIG_EARS = tuple(m for m in (WHISPER, WHISPER_TH) if m)  # ~3 GB together: not in the Claude edition's installer
+def stt_set(device):
+    """Which Whisper models do which job. CPU: set B — base picks the language, base.en English, Thonburian medium
+    Thai: 4.9 s/clip vs 21 s for turbo + Thonburian, same transcripts on the benchmark clips (Zerem's choice,
+    exp/cpu-stt run 44529861235). GPU (GPU pack): turbo for both, as before. FRIDAY_WHISPER_DETECT / _EN override."""
+    cpu = device != "cuda"
+    detect = os.environ.get("FRIDAY_WHISPER_DETECT") or ("base" if cpu else WHISPER)
+    en = os.environ.get("FRIDAY_WHISPER_EN") or ("base.en" if cpu else WHISPER)
+    env = os.environ.get("FRIDAY_WHISPER_DETECT") or os.environ.get("FRIDAY_WHISPER_EN")
+    name = ("B (CPU)" if cpu else "turbo (GPU)") + (" + env" if env else "")
+    return {"detect": detect, "en": en, "th": WHISPER_TH, "name": name}
+
+
+def ears_models(device):
+    """The models the set needs, each once (downloads and the "ready" check follow this)."""
+    s = stt_set(device)
+    return tuple(dict.fromkeys(m for m in (s["detect"], s["en"], s["th"]) if m))
+
+
+BIG_EARS = ears_models(WHISPER_DEVICE)  # not in the Claude edition's installer: fetched on first use
+# download sizes (MB): HF API file sizes 2026-11-19 (base, base.en, Thonburian medium); turbo from the owner's
+# --prefetch log (turbo + Thonburian = 3,082 MB). The voice smoke reports what was really downloaded.
+EARS_MB = {"base": 148, "base.en": 148, "tiny.en": 78, "large-v3-turbo": 1550,
+           "Vinxscribe/biodatlab-whisper-th-medium-faster": 1532}
+
+
+def ears_size_text(models=None):
+    mb = sum(EARS_MB.get(m, 0) for m in (models or BIG_EARS))
+    return f"~{mb / 1000:.1f} GB" if mb >= 1000 else f"~{mb} MB"
 EARS = {}  # "asked": the owner answered this session · "busy": downloading now
 
 
@@ -3407,7 +3435,7 @@ def _progress(label):
 
 
 def ensure_ears(ask=True):
-    """True when listening and speaking are ready on this PC: the Whisper models (~3 GB, fetched by faster-whisper) and
+    """True when listening and speaking are ready on this PC: the Whisper models of stt_set() (CPU ~1.8 GB, GPU ~3.1 GB) and
     the voice pack (Thai/English voices + owner's-voice model, packs.py). Otherwise ask once (typing keeps working),
     fetch in the background and say in the panel when ready; this utterance is skipped (False). With an NVIDIA card
     the GPU pack is offered too (a second question). ask=False (live captions while recording) only checks."""
@@ -3421,7 +3449,7 @@ def ensure_ears(ask=True):
             panel.send(msg={"role": "tool", "text": "⬇ ยังโหลดชุดเสียงอยู่ — ระหว่างนี้พิมพ์คุยได้ค่ะ"})
         return False
     EARS["asked"] = True
-    need = ([] if whisper_ok else ["โมเดลฟังเสียง ~3 GB"]) + ([] if voice_ok else [f"เสียงพูด ~{packs.size_mb('voice')} MB"])
+    need = ([] if whisper_ok else [f"โมเดลฟังเสียง {ears_size_text()}"]) + ([] if voice_ok else [f"เสียงพูด ~{packs.size_mb('voice')} MB"])
     if not confirm(f"ดาวน์โหลด{' + '.join(need)} ตอนนี้ไหมคะ? ระหว่างโหลดพิมพ์คุยได้ตามปกติ", ""):
         EARS["declined"] = True
         panel.send(msg={"role": "tool", "text": "ยังไม่ได้โหลดชุดเสียง — พิมพ์คุยได้ตามปกติ โหลดทีหลังได้: คลิกขวาไอคอน › ดาวน์โหลดโมเดลเสียง…"})
@@ -3469,13 +3497,16 @@ def _run_stt(detector, thai_model, en_model, audio16k, lang=None):
 def _transcribe(audio16k, quiet):
     """turbo decides the language (English only when confident: on short Thai words it guesses Vietnamese/Korean);
     Thai goes to Thonburian Whisper, fine-tuned on Thai (CER on short commands 0.90 -> 0.44, sentences 0.13 -> 0.02)."""
-    global _whisper, _whisper_th
+    global _whisper, _whisper_th, _whisper_en
     ct = "int8_float16" if WHISPER_DEVICE == "cuda" else "int8"
     if _whisper is None and not ensure_ears(ask=not quiet):
         return ""  # Claude edition: the models come on first use (asked, in the background)
     if _whisper is None:
         print("  (กำลังโหลด Whisper ครั้งแรก...)")
-        _whisper = WhisperModel(WHISPER, device=WHISPER_DEVICE, compute_type=ct)
+        s = stt_set(WHISPER_DEVICE)
+        print(f"  (STT set {s['name']}: detect {s['detect']} · English {s['en']} · Thai {s['th']} on {WHISPER_DEVICE})")
+        _whisper = WhisperModel(s["detect"], device=WHISPER_DEVICE, compute_type=ct)
+        _whisper_en = _whisper if s["en"] == s["detect"] else WhisperModel(s["en"], device=WHISPER_DEVICE, compute_type=ct)
     def thai_model():
         global _whisper_th
         if not WHISPER_TH:
@@ -3483,7 +3514,7 @@ def _transcribe(audio16k, quiet):
         if _whisper_th is None:
             _whisper_th = WhisperModel(WHISPER_TH, device=WHISPER_DEVICE, compute_type=ct)
         return _whisper_th
-    _, text = _run_stt(_whisper, thai_model, _whisper, audio16k, LANG)
+    _, text = _run_stt(_whisper, thai_model, _whisper_en, audio16k, LANG)
     if HALLUCINATION.search(text):
         if not quiet:
             print(f"  (ฟังไม่ชัด ตัดทิ้ง: {text[:60]})")
@@ -4969,6 +5000,65 @@ def run_tray(history):
         shutdown()
 
 
+def stt_bench_rows(clips, bench_dir=None):
+    """Every model set on the same clips through _run_stt (the app's own decode path), scored by sttbench. A (GPU set)
+    and B (CPU set) always; C/D only where their converted Thai models sit in bench_dir (exp/cpu-stt CI)."""
+    import sttbench
+    ct = "int8_float16" if WHISPER_DEVICE == "cuda" else "int8"
+    loaded = {}
+
+    def model(name):
+        if name not in loaded:
+            path = os.path.join(bench_dir or "", name)
+            loaded[name] = WhisperModel(path if bench_dir and os.path.isdir(path) else name, device=WHISPER_DEVICE,
+                                        compute_type=ct)
+        return loaded[name]
+    configs = {  # detector, Thai model, English model
+        "A turbo + Thonburian medium (GPU set)": (WHISPER, WHISPER_TH, WHISPER),
+        "B base + Thonburian medium + base.en (CPU set)": ("base", WHISPER_TH, "base.en"),
+        "C base + th-small + base.en": ("base", "th-small", "base.en"),
+        "D tiny + distill-th-small + base.en": ("tiny", "distill-th-small", "base.en"),
+    }
+    configs = {k: v for k, v in configs.items()
+               if k[0] not in "CD" or (bench_dir and os.path.isdir(os.path.join(bench_dir, v[1])))}
+
+    def run(name, clip):
+        det, th, en = configs[name]
+        return _run_stt(model(det), lambda: model(th), model(en), np.asarray(clip.audio, np.float32))
+    return sttbench.bench(list(configs), clips, run, now=time.time)
+
+
+def _ask_ok(title, text):
+    """A small OK/Cancel box (Tk, on the calling thread). False when cancelled."""
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return bool(messagebox.askokcancel(title, text, parent=root))
+    finally:
+        root.destroy()
+
+
+def stt_compare(folder):
+    """FRIDAY.exe --stt-compare <folder>: the owner reads sttbench.OWNER_SET into the mic (once; later runs reuse the
+    recordings), then every model set is scored on his own voice -> <folder>\\report.txt (its path; None if cancelled).
+    Prepared for when C/D are weighed (Zerem, 2026-11-19); FRIDAY_STT_BENCH points at converted C/D models if any."""
+    import sttbench
+    if not os.path.isfile(os.path.join(folder, "refs.tsv")):
+        for i, (lang, text) in enumerate(sttbench.OWNER_SET, 1):
+            if not _ask_ok(f"FRIDAY · อัดเสียง {i}/{len(sttbench.OWNER_SET)}",
+                           f"กด OK แล้วพูดประโยคนี้ตามปกติ:\n\n{text}\n\nพูดจบแล้วเงียบ ระบบจะตัดเอง"):
+                return None
+            audio = wakeword.record_utterance(no_speech_timeout=8)
+            sttbench.save_clip(folder, i, lang, text, audio)
+    for m in (*BIG_EARS, *ears_models("cuda"), "base", "base.en"):
+        _download_model(m)
+    clips = sttbench.load_set(folder)
+    return str(sttbench.write_report(folder, stt_bench_rows(clips, os.environ.get("FRIDAY_STT_BENCH")), WHISPER_DEVICE))
+
+
 def voice_smoke(report):
     """FRIDAY.exe --voice-smoke <report>: the owner's voice path end to end, on an installed copy (CI runs it after a
     silent install), with no mic, speakers or key. Each line in the report is evidence: what came out, not "loaded".
@@ -5115,10 +5205,14 @@ def voice_smoke(report):
 
     # 5. Whisper: the models the owner downloads, then the app's own transcribe()
     def whisper_models():
+        sizes = []
         for m in BIG_EARS:
-            _download_model(m)
+            path = _download_model(m)
+            sizes.append(sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(path) for f in fs) / 1e6)
         need(_ears_cached(), "models not in the cache after download")
-        return ", ".join(BIG_EARS) + f" on {WHISPER_DEVICE}"
+        s = stt_set(WHISPER_DEVICE)
+        return (f"set {s['name']}: " + ", ".join(f"{m} {mb:.0f} MB" for m, mb in zip(BIG_EARS, sizes)) +
+                f" = {sum(sizes):.0f} MB on disk (prompt says {ears_size_text()}) on {WHISPER_DEVICE}")
     step("Whisper models download (faster-whisper, like ensure_ears)", whisper_models)
 
     def hear_en():
@@ -5151,20 +5245,6 @@ def voice_smoke(report):
     bench_dir = os.environ.get("FRIDAY_STT_BENCH")
     if bench_dir:
         import sttbench
-        ct = "int8_float16" if WHISPER_DEVICE == "cuda" else "int8"
-        loaded = {}
-
-        def model(name):
-            if name not in loaded:
-                path = os.path.join(bench_dir, name)
-                loaded[name] = WhisperModel(path if os.path.isdir(path) else name, device=WHISPER_DEVICE, compute_type=ct)
-            return loaded[name]
-        configs = {  # detector, Thai model, English model
-            "A now: turbo + Thonburian medium": (WHISPER, WHISPER_TH, WHISPER),
-            "B base + Thonburian medium + base.en": ("base", WHISPER_TH, "base.en"),
-            "C base + th-small + base.en": ("base", "th-small", "base.en"),
-            "D tiny + distill-th-small + base.en": ("tiny", "distill-th-small", "base.en"),
-        }
         TH = ["เปิดเพลงให้หน่อย", "พรุ่งนี้ฝนจะตกไหม", "ตั้งเตือนอีกสิบนาที", "วันนี้มีงานอะไรบ้าง", "ปิดโปรแกรมทั้งหมด"]
         EN = ["Open the music player.", "What is the weather tomorrow?", "Set a timer for ten minutes.",
               "What do I have to do today?", "Turn the volume down."]
@@ -5172,11 +5252,7 @@ def voice_smoke(report):
         def bench():
             clips = [sttbench.Clip("th", t, wav_to_16k(tts_th.synth_vanira(t, "1"))) for t in TH] + \
                     [sttbench.Clip("en", t, wav_to_16k(tts_th.synth_en(t))) for t in EN]
-
-            def run(name, clip):
-                det, th, en = configs[name]
-                return _run_stt(model(det), lambda: model(th), model(en), np.asarray(clip.audio, np.float32))
-            rows = sttbench.bench(list(configs), clips, run, now=time.time)
+            rows = stt_bench_rows(clips, bench_dir)
             return "\n" + "\n".join(
                 f"  {r['config']}: lang {r['lang_ok']} · Thai CER {r['th_cer']} · English WER {r['en_wer']} · "
                 f"{r['sec_per_clip']} s/clip (x{r['x_realtime']} real time, {r['note']})\n    " + " | ".join(r["samples"])
@@ -5217,7 +5293,7 @@ def prefetch():
     Whisper turbo + Thai + tiny.en for the wake word; search: MiniLM). Exit code 1 = something failed (no internet)."""
     from faster_whisper.utils import download_model
     ok = True
-    for name in (WHISPER, WHISPER_TH, "tiny.en"):
+    for name in (*BIG_EARS, "tiny.en"):
         try:
             print(f"  ⬇ {name}")
             download_model(name) if name else None
@@ -5246,6 +5322,11 @@ def main():
         return selftest()
     if "--prefetch" in sys.argv:
         return prefetch()
+    if "--stt-compare" in sys.argv:  # the owner's own voice through every model set (see stt_compare)
+        path = stt_compare(sys.argv[sys.argv.index("--stt-compare") + 1])
+        if path:
+            _ask_ok("FRIDAY · เทียบโมเดลฟังเสียง", f"เสร็จแล้ว — ผลอยู่ที่\n{path}")
+        return
     if "--voice-smoke" in sys.argv:  # CI on an installed copy: report path follows the flag
         return voice_smoke(sys.argv[sys.argv.index("--voice-smoke") + 1])
     global panel, MUTED, SESS

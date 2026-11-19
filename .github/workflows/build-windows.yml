@@ -145,7 +145,7 @@ jobs:
           $setup = Get-ChildItem dist\installer\FRIDAY-Setup-*.exe | Select-Object -First 1
           $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=D:\fridaytest", "/TASKS=", "/LOG=D:\friday\install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "silent install failed ($($p.ExitCode))"; exit 1 }
-          if (Test-Path D:\stt-bench) { $env:FRIDAY_STT_BENCH = "D:\stt-bench" }
+          $env:FRIDAY_STT_BENCH = "D:\stt-bench"  # A and B always; C and D only where the exp step converted them
           $p = Start-Process D:\fridaytest\FRIDAY\FRIDAY.exe -ArgumentList "--voice-smoke", "D:\friday\voice-smoke.txt" -Wait -PassThru
           Get-Content voice-smoke.txt
           if (Test-Path D:\fridaytest\data\logs\tts-worker.log) { "--- tts-worker.log"; Get-Content D:\fridaytest\data\logs\tts-worker.log -Tail 60 }
